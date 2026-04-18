@@ -17,6 +17,7 @@ import type { TrustAssessment } from './trustTypes';
 import type { CooldownStrength, MemoryContext } from '../session/types';
 
 const CONFIRMATION_COOLDOWN_MS = 8000;
+const ANTI_REPEAT_WINDOW_MS = 16000;
 const MATERIAL_CONFIDENCE_DELTA = 0.12;
 const HIGH_URGENCY_CONFIDENCE = 0.8;
 const PERSISTENCE_CYCLES = 2;
@@ -446,6 +447,42 @@ const isConfirmationSuppressedByCooldown = (
   return evidenceChangedMaterially(promptType, state, trust, memory) === false;
 };
 
+const isPromptRecovered = (
+  promptType: PromptType,
+  memory: MemoryContext
+) =>
+  promptType === 'confirm_breathing'
+    ? memory.breathingRecovered
+    : memory.responsivenessRecovered;
+
+const isConfirmationSuppressedByAntiRepeat = (
+  promptType: PromptType,
+  state: MergedState,
+  trust: TrustAssessment,
+  memory: MemoryContext
+) => {
+  if (memory.lastPromptType !== promptType || memory.lastPromptAt === null) {
+    return false;
+  }
+
+  if (isPromptRecovered(promptType, memory)) {
+    return false;
+  }
+
+  if (Date.now() - memory.lastPromptAt >= ANTI_REPEAT_WINDOW_MS) {
+    return false;
+  }
+
+  if (evidenceChangedMaterially(promptType, state, trust, memory)) {
+    return false;
+  }
+
+  return (
+    memory.last_step_id?.startsWith('reassess') === true ||
+    memory.recent_steps.includes('reassess')
+  );
+};
+
 const getUrgentBypassReason = (
   state: MergedState,
   trust: TrustAssessment,
@@ -558,6 +595,28 @@ const selectAction = (
     ],
   };
   let cooldownAffected = false;
+  let antiRepeatSuppressed = false;
+  let antiRepeatSuppressedPromptType: PromptType | null = null;
+  let antiRepeatReason: string | undefined;
+  const confirmationRecoveryActivated =
+    memory.breathingConfirmationRecentlyCleared ||
+    memory.responsivenessConfirmationRecentlyCleared;
+  const confirmationRecoveryReason = [
+    memory.breathingConfirmationRecentlyCleared ? memory.breathingRecoveryReason : null,
+    memory.responsivenessConfirmationRecentlyCleared
+      ? memory.responsivenessRecoveryReason
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const getDecisionOverrides = (): Partial<ProtocolDecision> => ({
+    confirmation_recovery_activated: confirmationRecoveryActivated,
+    confirmation_recovery_reason: confirmationRecoveryReason || undefined,
+    anti_repeat_suppressed: antiRepeatSuppressed,
+    anti_repeat_reason: antiRepeatReason,
+    anti_repeat_suppressed_prompt_type: antiRepeatSuppressedPromptType,
+  });
 
   for (const action of ACTION_PRIORITY_ORDER) {
     switch (action) {
@@ -575,6 +634,7 @@ const selectAction = (
             actionDebug,
             cooldownAffected,
             {
+              ...getDecisionOverrides(),
               urgent_bypass_activated: false,
               urgent_bypass_reason: getUrgentBypassReason(state, trust, memory),
               urgent_bypass_confidence: trust.fields.severe_bleeding.confidence,
@@ -604,7 +664,8 @@ const selectAction = (
             memory,
             'Breathing support is the highest-priority allowed action.',
             actionDebug,
-            cooldownAffected
+            cooldownAffected,
+            getDecisionOverrides()
           );
           for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
             ACTION_PRIORITY_ORDER.indexOf(action) + 1
@@ -624,7 +685,8 @@ const selectAction = (
             memory,
             'Responsiveness check is the highest-priority allowed action.',
             actionDebug,
-            cooldownAffected
+            cooldownAffected,
+            getDecisionOverrides()
           );
           for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
             ACTION_PRIORITY_ORDER.indexOf(action) + 1
@@ -637,6 +699,15 @@ const selectAction = (
         addSkippedAction(actionDebug.skipped, action, 'not_allowed');
         break;
       case 'confirm_breathing':
+        if (memory.breathingRecovered) {
+          addSkippedAction(
+            actionDebug.skipped,
+            action,
+            'confirmation_recovered'
+          );
+          break;
+        }
+
         if (!trust.fields.breathing.needsConfirmation) {
           addSkippedAction(
             actionDebug.skipped,
@@ -659,6 +730,22 @@ const selectAction = (
           break;
         }
 
+        if (
+          isConfirmationSuppressedByAntiRepeat(
+            'confirm_breathing',
+            state,
+            trust,
+            memory
+          )
+        ) {
+          antiRepeatSuppressed = true;
+          antiRepeatSuppressedPromptType = 'confirm_breathing';
+          antiRepeatReason =
+            'Breathing confirmation was recently attempted and evidence has not changed.';
+          addSkippedAction(actionDebug.skipped, action, 'anti_repeat_suppressed');
+          break;
+        }
+
         {
           const decision = makeSelectedDecision(
             action,
@@ -666,7 +753,8 @@ const selectAction = (
             memory,
             'Breathing needs confirmation and no higher-priority action is allowed.',
             actionDebug,
-            cooldownAffected
+            cooldownAffected,
+            getDecisionOverrides()
           );
           for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
             ACTION_PRIORITY_ORDER.indexOf(action) + 1
@@ -676,6 +764,15 @@ const selectAction = (
           return decision;
         }
       case 'confirm_responsiveness':
+        if (memory.responsivenessRecovered) {
+          addSkippedAction(
+            actionDebug.skipped,
+            action,
+            'confirmation_recovered'
+          );
+          break;
+        }
+
         if (!trust.fields.responsiveness.needsConfirmation) {
           addSkippedAction(
             actionDebug.skipped,
@@ -698,6 +795,22 @@ const selectAction = (
           break;
         }
 
+        if (
+          isConfirmationSuppressedByAntiRepeat(
+            'confirm_responsiveness',
+            state,
+            trust,
+            memory
+          )
+        ) {
+          antiRepeatSuppressed = true;
+          antiRepeatSuppressedPromptType = 'confirm_responsiveness';
+          antiRepeatReason =
+            'Responsiveness confirmation was recently attempted and evidence has not changed.';
+          addSkippedAction(actionDebug.skipped, action, 'anti_repeat_suppressed');
+          break;
+        }
+
         {
           const decision = makeSelectedDecision(
             action,
@@ -705,7 +818,8 @@ const selectAction = (
             memory,
             'Responsiveness needs confirmation and no higher-priority action is allowed.',
             actionDebug,
-            cooldownAffected
+            cooldownAffected,
+            getDecisionOverrides()
           );
           for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
             ACTION_PRIORITY_ORDER.indexOf(action) + 1
@@ -722,7 +836,8 @@ const selectAction = (
           memory,
           'No higher-priority allowed action is available.',
           actionDebug,
-          cooldownAffected
+          cooldownAffected,
+          getDecisionOverrides()
         );
       }
     }
@@ -734,7 +849,8 @@ const selectAction = (
     memory,
     'No higher-priority allowed action is available.',
     actionDebug,
-    cooldownAffected
+    cooldownAffected,
+    getDecisionOverrides()
   );
 };
 
@@ -979,6 +1095,37 @@ const decide = (
     phaseChanged
   );
 
+  if (
+    guardedDecision.selectedAction !== 'monitoring' &&
+    memory.last_step_id?.startsWith('reassess') === true &&
+    (memory.breathingRecovered || memory.responsivenessRecovered)
+  ) {
+    guardedDecision.reassess_exited_after_recovery = true;
+    guardedDecision.reassess_exit_reason =
+      memory.breathingRecovered && memory.responsivenessRecovered
+        ? 'Monitoring exited after breathing and responsiveness recovered.'
+        : memory.breathingRecovered
+          ? 'Monitoring exited after breathing recovered.'
+          : 'Monitoring exited after responsiveness recovered.';
+    guardedDecision.actionDebug = guardedDecision.actionDebug
+      ? {
+          ...guardedDecision.actionDebug,
+          skipped: [
+            ...guardedDecision.actionDebug.skipped,
+            {
+              action: 'monitoring',
+              reason: 'reassess_exited_after_recovery',
+            },
+          ],
+        }
+      : guardedDecision.actionDebug;
+  } else {
+    guardedDecision.reassess_exited_after_recovery =
+      guardedDecision.reassess_exited_after_recovery ?? false;
+    guardedDecision.reassess_exit_reason =
+      guardedDecision.reassess_exit_reason ?? undefined;
+  }
+
   if (guardedDecision.urgent_bypass_activated !== true) {
     guardedDecision.urgent_bypass_activated = false;
     guardedDecision.urgent_bypass_reason =
@@ -994,6 +1141,36 @@ const decide = (
       guardedDecision.urgent_bypass_contradiction_blocked ??
       memory.severeBleedingContradictionRecent;
   }
+
+  const confirmationRecoveryActivated =
+    guardedDecision.confirmation_recovery_activated === true ||
+    memory.breathingConfirmationRecentlyCleared ||
+    memory.responsivenessConfirmationRecentlyCleared;
+  const confirmationRecoveryReason =
+    guardedDecision.confirmation_recovery_reason ??
+    [
+      memory.breathingConfirmationRecentlyCleared
+        ? memory.breathingRecoveryReason
+        : null,
+      memory.responsivenessConfirmationRecentlyCleared
+        ? memory.responsivenessRecoveryReason
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+  guardedDecision.confirmation_recovery_activated =
+    guardedDecision.confirmation_recovery_activated ??
+    confirmationRecoveryActivated;
+  guardedDecision.confirmation_recovery_reason =
+    guardedDecision.confirmation_recovery_reason ??
+    (confirmationRecoveryReason || undefined);
+  guardedDecision.anti_repeat_suppressed =
+    guardedDecision.anti_repeat_suppressed ?? false;
+  guardedDecision.anti_repeat_reason =
+    guardedDecision.anti_repeat_reason ?? undefined;
+  guardedDecision.anti_repeat_suppressed_prompt_type =
+    guardedDecision.anti_repeat_suppressed_prompt_type ?? null;
 
   return applyEscalation(
     guardedDecision,

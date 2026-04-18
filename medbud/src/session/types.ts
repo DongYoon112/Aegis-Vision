@@ -15,6 +15,20 @@ export type BleedingObservation = {
   confidence: number;
 };
 
+export type FieldObservation = {
+  value: NullableBoolean;
+  confidence: number;
+};
+
+export type RecoveryFieldState = {
+  recentObservations: FieldObservation[];
+  stableCycleCount: number;
+  confirmationNeededLastCycle: boolean;
+  confirmationRecentlyCleared: boolean;
+  lastConfirmationClearedAt: number | null;
+  recoveryReason: string;
+};
+
 export type SessionMemory = {
   last_step_id: string | null;
   last_instruction: string | null;
@@ -30,6 +44,10 @@ export type SessionMemory = {
   severeBleedingConsecutiveTrueCount: number;
   severeBleedingContradictionRecent: boolean;
   lastHighUrgencyAt: number | null;
+  fieldRecovery: {
+    breathing: RecoveryFieldState;
+    responsiveness: RecoveryFieldState;
+  };
 };
 
 export type CooldownStrength = 'none' | 'weak' | 'strong';
@@ -58,4 +76,15 @@ export type MemoryContext = {
   urgentBypassEligible: boolean;
   urgentBypassReason: string;
   urgentBypassConfidence: number;
+  breathingStableCycleCount: number;
+  responsivenessStableCycleCount: number;
+  breathingRecovered: boolean;
+  responsivenessRecovered: boolean;
+  breathingConfirmationRecentlyCleared: boolean;
+  responsivenessConfirmationRecentlyCleared: boolean;
+  breathingRecoveryReason: string;
+  responsivenessRecoveryReason: string;
+  antiRepeatSuppressedPromptType: PromptType | null;
+  antiRepeatReason: string | null;
+  reassessExitReason: string | null;
 };

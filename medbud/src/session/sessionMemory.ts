@@ -7,8 +7,10 @@ import {
 import type { TrustAssessment } from '../protocol/trustTypes';
 import type {
   BleedingObservation,
+  FieldObservation,
   MemoryContext,
   RecentSignals,
+  RecoveryFieldState,
   SessionMemory,
   SignalSnapshot,
 } from './types';
@@ -16,7 +18,9 @@ import type {
 const RECENT_STEPS_LIMIT = 4;
 const SIGNAL_HISTORY_LIMIT = 2;
 const BLEEDING_OBSERVATION_LIMIT = 4;
+const RECOVERY_OBSERVATION_LIMIT = 3;
 const HIGH_URGENCY_CONFIDENCE = 0.8;
+const RECOVERY_CONFIDENCE_THRESHOLD = 0.6;
 
 const SIGNAL_QUALITY_MULTIPLIER: Record<TrustAssessment['signal_quality'], number> = {
   high: 1,
@@ -125,6 +129,90 @@ const hasRecentBleedingContradiction = (
       observation.value === false && observation.confidence >= HIGH_URGENCY_CONFIDENCE
   ) || trust.fields.severe_bleeding.reason.includes('disagree');
 
+const createInitialRecoveryFieldState = (): RecoveryFieldState => ({
+  recentObservations: [],
+  stableCycleCount: 0,
+  confirmationNeededLastCycle: false,
+  confirmationRecentlyCleared: false,
+  lastConfirmationClearedAt: null,
+  recoveryReason: '',
+});
+
+const getRecoveryObservation = (
+  field: 'breathing' | 'responsiveness',
+  state: MergedState,
+  trust: TrustAssessment
+): FieldObservation => ({
+  value: field === 'breathing' ? state.breathing : state.responsive,
+  confidence: trust.fields[field].confidence,
+});
+
+const getNextRecoveryFieldState = (
+  field: 'breathing' | 'responsiveness',
+  previous: RecoveryFieldState,
+  state: MergedState,
+  trust: TrustAssessment
+): RecoveryFieldState => {
+  const observation = getRecoveryObservation(field, state, trust);
+  const recentObservations = [...previous.recentObservations, observation].slice(
+    -RECOVERY_OBSERVATION_LIMIT
+  );
+  const qualifiesForRecovery =
+    observation.value !== null &&
+    observation.confidence >= RECOVERY_CONFIDENCE_THRESHOLD &&
+    trust.fields[field].needsConfirmation === false;
+  const previousObservation =
+    previous.recentObservations[previous.recentObservations.length - 1] ?? null;
+  const stableCycleCount = qualifiesForRecovery
+    ? previousObservation?.value === observation.value && previous.stableCycleCount > 0
+      ? previous.stableCycleCount + 1
+      : 1
+    : 0;
+  const confirmationRecentlyCleared =
+    previous.confirmationNeededLastCycle &&
+    qualifiesForRecovery &&
+    stableCycleCount >= 1;
+  const recoveryReason = confirmationRecentlyCleared
+    ? `${field} confirmation cleared after stable higher-confidence evidence.`
+    : !qualifiesForRecovery
+      ? observation.value === null
+        ? `${field} is still unknown.`
+        : trust.fields[field].needsConfirmation
+          ? `${field} still needs confirmation.`
+          : `${field} confidence is still recovering.`
+      : `${field} is stable and no longer needs confirmation.`;
+
+  return {
+    recentObservations,
+    stableCycleCount,
+    confirmationNeededLastCycle: trust.fields[field].needsConfirmation,
+    confirmationRecentlyCleared,
+    lastConfirmationClearedAt: confirmationRecentlyCleared
+      ? Date.now()
+      : previous.lastConfirmationClearedAt,
+    recoveryReason,
+  };
+};
+
+const getNextFieldRecoveryState = (
+  memory: SessionMemory,
+  state: MergedState,
+  trust: TrustAssessment
+) => ({
+  breathing: getNextRecoveryFieldState(
+    'breathing',
+    memory.fieldRecovery.breathing,
+    state,
+    trust
+  ),
+  responsiveness: getNextRecoveryFieldState(
+    'responsiveness',
+    memory.fieldRecovery.responsiveness,
+    state,
+    trust
+  ),
+});
+
 export const createInitialSessionMemory = (): SessionMemory => ({
   last_step_id: null,
   last_instruction: null,
@@ -148,6 +236,10 @@ export const createInitialSessionMemory = (): SessionMemory => ({
   severeBleedingConsecutiveTrueCount: 0,
   severeBleedingContradictionRecent: false,
   lastHighUrgencyAt: null,
+  fieldRecovery: {
+    breathing: createInitialRecoveryFieldState(),
+    responsiveness: createInitialRecoveryFieldState(),
+  },
 });
 
 export const buildMemoryContext = (
@@ -196,6 +288,7 @@ export const buildMemoryContext = (
           : severeBleedingConsecutiveTrueCount < 2
             ? 'insufficient severe bleeding persistence'
             : 'persistent high-confidence severe bleeding';
+  const fieldRecovery = getNextFieldRecoveryState(memory, state, trust);
 
   return {
     last_step_id: memory.last_step_id,
@@ -221,6 +314,23 @@ export const buildMemoryContext = (
     urgentBypassEligible,
     urgentBypassReason,
     urgentBypassConfidence: trust.fields.severe_bleeding.confidence,
+    breathingStableCycleCount: fieldRecovery.breathing.stableCycleCount,
+    responsivenessStableCycleCount: fieldRecovery.responsiveness.stableCycleCount,
+    breathingRecovered:
+      fieldRecovery.breathing.stableCycleCount >= 1 &&
+      trust.fields.breathing.needsConfirmation === false,
+    responsivenessRecovered:
+      fieldRecovery.responsiveness.stableCycleCount >= 1 &&
+      trust.fields.responsiveness.needsConfirmation === false,
+    breathingConfirmationRecentlyCleared:
+      fieldRecovery.breathing.confirmationRecentlyCleared,
+    responsivenessConfirmationRecentlyCleared:
+      fieldRecovery.responsiveness.confirmationRecentlyCleared,
+    breathingRecoveryReason: fieldRecovery.breathing.recoveryReason,
+    responsivenessRecoveryReason: fieldRecovery.responsiveness.recoveryReason,
+    antiRepeatSuppressedPromptType: null,
+    antiRepeatReason: null,
+    reassessExitReason: null,
   };
 };
 
@@ -258,6 +368,7 @@ export const applyDecisionToMemory = (
     trust.fields.severe_bleeding.confidence >= HIGH_URGENCY_CONFIDENCE
       ? Date.now()
       : memory.lastHighUrgencyAt;
+  const fieldRecovery = getNextFieldRecoveryState(memory, state, trust);
 
   return {
     last_step_id: decision.step_id,
@@ -279,5 +390,6 @@ export const applyDecisionToMemory = (
     severeBleedingConsecutiveTrueCount,
     severeBleedingContradictionRecent,
     lastHighUrgencyAt,
+    fieldRecovery,
   };
 };

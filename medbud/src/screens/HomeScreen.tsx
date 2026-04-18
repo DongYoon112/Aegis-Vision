@@ -441,16 +441,44 @@ export function HomeScreen() {
           urgentBypassEligible: memoryContext?.urgentBypassEligible ?? false,
           urgentBypassReason: memoryContext?.urgentBypassReason ?? '',
           urgentBypassConfidence: memoryContext?.urgentBypassConfidence ?? 0,
+          fieldRecovery: sessionMemory.fieldRecovery,
+          breathingStableCycleCount:
+            memoryContext?.breathingStableCycleCount ?? 0,
+          responsivenessStableCycleCount:
+            memoryContext?.responsivenessStableCycleCount ?? 0,
+          breathingRecovered: memoryContext?.breathingRecovered ?? false,
+          responsivenessRecovered:
+            memoryContext?.responsivenessRecovered ?? false,
+          breathingConfirmationRecentlyCleared:
+            memoryContext?.breathingConfirmationRecentlyCleared ?? false,
+          responsivenessConfirmationRecentlyCleared:
+            memoryContext?.responsivenessConfirmationRecentlyCleared ?? false,
+          breathingRecoveryReason:
+            memoryContext?.breathingRecoveryReason ?? '',
+          responsivenessRecoveryReason:
+            memoryContext?.responsivenessRecoveryReason ?? '',
+          antiRepeatSuppressedPromptType:
+            protocolDecision?.anti_repeat_suppressed_prompt_type ??
+            memoryContext?.antiRepeatSuppressedPromptType ??
+            null,
+          antiRepeatReason:
+            protocolDecision?.anti_repeat_reason ??
+            memoryContext?.antiRepeatReason ??
+            null,
+          reassessExitReason:
+            protocolDecision?.reassess_exit_reason ??
+            memoryContext?.reassessExitReason ??
+            null,
           stability_bias: memoryContext?.signalsStable ?? false,
           confidence_delta: memoryContext?.confidenceDelta ?? 0,
           signals_improving: memoryContext?.signalsImproving ?? false,
         })}
-        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "lastPromptType": null,\n  "lastPromptAt": null,\n  "cooldown_active": false,\n  "confirmation_prompt_suppressed": false,\n  "suppressed_prompt_type": null,\n  "recentBleedingObservations": [],\n  "severeBleedingConsecutiveTrueCount": 0,\n  "severeBleedingContradictionRecent": false,\n  "lastHighUrgencyAt": null,\n  "urgentBypassEligible": false,\n  "urgentBypassReason": "",\n  "urgentBypassConfidence": 0,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
+        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "lastPromptType": null,\n  "lastPromptAt": null,\n  "cooldown_active": false,\n  "confirmation_prompt_suppressed": false,\n  "suppressed_prompt_type": null,\n  "recentBleedingObservations": [],\n  "severeBleedingConsecutiveTrueCount": 0,\n  "severeBleedingContradictionRecent": false,\n  "lastHighUrgencyAt": null,\n  "urgentBypassEligible": false,\n  "urgentBypassReason": "",\n  "urgentBypassConfidence": 0,\n  "fieldRecovery": {\n    "breathing": {\n      "recentObservations": [],\n      "stableCycleCount": 0,\n      "confirmationNeededLastCycle": false,\n      "confirmationRecentlyCleared": false,\n      "lastConfirmationClearedAt": null,\n      "recoveryReason": ""\n    },\n    "responsiveness": {\n      "recentObservations": [],\n      "stableCycleCount": 0,\n      "confirmationNeededLastCycle": false,\n      "confirmationRecentlyCleared": false,\n      "lastConfirmationClearedAt": null,\n      "recoveryReason": ""\n    }\n  },\n  "breathingStableCycleCount": 0,\n  "responsivenessStableCycleCount": 0,\n  "breathingRecovered": false,\n  "responsivenessRecovered": false,\n  "breathingConfirmationRecentlyCleared": false,\n  "responsivenessConfirmationRecentlyCleared": false,\n  "breathingRecoveryReason": "",\n  "responsivenessRecoveryReason": "",\n  "antiRepeatSuppressedPromptType": null,\n  "antiRepeatReason": null,\n  "reassessExitReason": null,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
       />
       <JsonCard
         title="Protocol Decision"
         json={stringifyValue(protocolDecision)}
-        placeholder='{\n  "step_id": "",\n  "selectedAction": "monitoring",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false,\n  "consideredActions": [],\n  "cooldown_affected": false,\n  "actionDebug": {\n    "priorityOrder": [\n      "control_bleeding",\n      "airway_or_breathing_support",\n      "check_responsiveness",\n      "confirm_breathing",\n      "confirm_responsiveness",\n      "monitoring"\n    ],\n    "skipped": []\n  },\n  "urgent_bypass_activated": false,\n  "urgent_bypass_reason": "",\n  "urgent_bypass_confidence": 0,\n  "urgent_bypass_persistence_count": 0,\n  "urgent_bypass_contradiction_blocked": false,\n  "prompt_type": null,\n  "cooldown_suppressed": false\n}'
+        placeholder='{\n  "step_id": "",\n  "selectedAction": "monitoring",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false,\n  "consideredActions": [],\n  "cooldown_affected": false,\n  "actionDebug": {\n    "priorityOrder": [\n      "control_bleeding",\n      "airway_or_breathing_support",\n      "check_responsiveness",\n      "confirm_breathing",\n      "confirm_responsiveness",\n      "monitoring"\n    ],\n    "skipped": []\n  },\n  "urgent_bypass_activated": false,\n  "urgent_bypass_reason": "",\n  "urgent_bypass_confidence": 0,\n  "urgent_bypass_persistence_count": 0,\n  "urgent_bypass_contradiction_blocked": false,\n  "confirmation_recovery_activated": false,\n  "confirmation_recovery_reason": "",\n  "anti_repeat_suppressed": false,\n  "anti_repeat_reason": "",\n  "anti_repeat_suppressed_prompt_type": null,\n  "reassess_exited_after_recovery": false,\n  "reassess_exit_reason": "",\n  "prompt_type": null,\n  "cooldown_suppressed": false\n}'
       />
       <ResponseCard response={spokenResponse} />
       <ErrorCard error={errorMessage} />

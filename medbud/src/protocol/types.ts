@@ -74,14 +74,17 @@ export type ProtocolSelectedAction =
 export type ActionSkipReason =
   | 'not_allowed'
   | 'field_does_not_need_confirmation'
+  | 'confirmation_recovered'
   | 'cooldown'
+  | 'anti_repeat_suppressed'
   | 'severe_bleeding_override'
   | 'lower_priority_than_selected'
   | 'urgent_bypass_triggered'
   | 'insufficient_persistence'
   | 'confidence_below_urgent_threshold'
   | 'recent_contradiction'
-  | 'control_bleeding_not_allowed';
+  | 'control_bleeding_not_allowed'
+  | 'reassess_exited_after_recovery';
 
 export type ProtocolActionDebug = {
   priorityOrder: ProtocolSelectedAction[];
@@ -106,6 +109,13 @@ export type ProtocolDecision = {
   urgent_bypass_confidence?: number;
   urgent_bypass_persistence_count?: number;
   urgent_bypass_contradiction_blocked?: boolean;
+  confirmation_recovery_activated?: boolean;
+  confirmation_recovery_reason?: string;
+  anti_repeat_suppressed?: boolean;
+  anti_repeat_reason?: string;
+  anti_repeat_suppressed_prompt_type?: PromptType | null;
+  reassess_exited_after_recovery?: boolean;
+  reassess_exit_reason?: string;
   prompt_type?: PromptType | null;
   cooldown_suppressed?: boolean;
 };
