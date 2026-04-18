@@ -1,6 +1,12 @@
 import type { CameraFrame } from '../../protocol/types';
+import { glassesAudio } from '../glassesAudio';
 import { metaWearablesBridge } from '../metaWearablesBridge';
-import type { FrameProvider, FrameProviderConnectionState, FrameProviderStatus } from './types';
+import type {
+  InputChannel,
+  InputConnectionState,
+  InputSource,
+  InputSourceStatus,
+} from './types';
 
 const SAMPLE_INTERVAL_MS = 1500;
 
@@ -9,44 +15,92 @@ const timeout = (ms: number) =>
     setTimeout(() => resolve(false), ms);
   });
 
-class MetaGlassesFrameProvider implements FrameProvider {
-  private available = false;
-  private active = false;
+class MetaWearablesSource implements InputSource {
+  readonly kind = 'meta_glasses' as const;
+
+  private videoAvailable = false;
+  private audioAvailable = false;
+  private videoActive = false;
   private latestFrame: CameraFrame | null = null;
   private pollingInterval: ReturnType<typeof setInterval> | null = null;
-  private connectionState: FrameProviderConnectionState = 'disconnected';
-  private reason = 'Meta glasses unavailable';
+  private videoConnectionState: InputConnectionState = 'unavailable';
+  private audioConnectionState: InputConnectionState = 'unavailable';
+  private reason = 'Meta wearables bridge unavailable';
 
   async initialize() {
     await metaWearablesBridge.initialize();
-    this.available = await metaWearablesBridge.isAvailable();
-    this.connectionState = await metaWearablesBridge.getConnectionState();
-    this.reason = this.available ? 'Meta glasses available' : 'Meta glasses unavailable';
+    this.videoAvailable = await metaWearablesBridge.isAvailable();
+    this.audioAvailable = await glassesAudio.isMicrophoneAvailable();
+    const bridgeState = await metaWearablesBridge.getConnectionState();
+
+    this.videoConnectionState = this.videoAvailable
+      ? bridgeState
+      : 'unavailable';
+    this.audioConnectionState = this.audioAvailable
+      ? this.videoConnectionState
+      : 'unavailable';
+    this.reason = this.videoAvailable
+      ? 'Meta glasses available'
+      : 'Meta wearables bridge unavailable';
   }
 
-  async requestPermissions() {
+  isAvailable() {
+    return this.videoAvailable || this.audioAvailable;
+  }
+
+  async requestPermissions(_channels: InputChannel[] = ['video', 'audio']) {
     return;
   }
 
   async connect() {
-    this.connectionState = 'connecting';
+    if (!this.videoAvailable) {
+      this.videoConnectionState = 'unavailable';
+      this.audioConnectionState = this.audioAvailable ? 'disconnected' : 'unavailable';
+      this.reason = 'Meta wearables bridge unavailable';
+      throw new Error(this.reason);
+    }
+
+    this.videoConnectionState = 'connecting';
+    this.audioConnectionState = this.audioAvailable ? 'connecting' : 'unavailable';
+
     const connected = await Promise.race([
       metaWearablesBridge.connectToGlasses(),
       timeout(2000),
     ]);
 
-    this.available = await metaWearablesBridge.isAvailable();
-    this.connectionState = connected ? 'connected' : 'disconnected';
-    this.reason = connected
+    this.videoAvailable = await metaWearablesBridge.isAvailable();
+    this.audioAvailable = await glassesAudio.isMicrophoneAvailable();
+
+    if (!connected) {
+      this.videoConnectionState = 'failed';
+      this.audioConnectionState = this.audioAvailable ? 'failed' : 'unavailable';
+      this.reason = 'Meta glasses connection failed';
+      throw new Error(this.reason);
+    }
+
+    const bridgeState = await metaWearablesBridge.getConnectionState();
+    const normalizedState = bridgeState;
+
+    if (normalizedState !== 'connected') {
+      this.videoConnectionState = normalizedState;
+      this.audioConnectionState = this.audioAvailable ? normalizedState : 'unavailable';
+      this.reason = 'Meta glasses did not report a connected state';
+      throw new Error(this.reason);
+    }
+
+    this.videoConnectionState = 'connected';
+    this.audioConnectionState = this.audioAvailable ? 'connected' : 'unavailable';
+    this.reason = this.audioAvailable
       ? 'Meta glasses connected'
-      : 'Meta glasses unavailable';
+      : 'Meta glasses connected for video only';
   }
 
   async disconnect() {
     await metaWearablesBridge.disconnectFromGlasses();
-    this.connectionState = 'disconnected';
-    this.active = false;
-    this.stopSampling();
+    this.videoConnectionState = this.videoAvailable ? 'disconnected' : 'unavailable';
+    this.audioConnectionState = this.audioAvailable ? 'disconnected' : 'unavailable';
+    this.videoActive = false;
+    await this.stopVideoCapture();
     this.reason = 'Meta glasses disconnected';
   }
 
@@ -60,54 +114,77 @@ class MetaGlassesFrameProvider implements FrameProvider {
     }
 
     const bridgeState = await metaWearablesBridge.getConnectionState();
-    this.connectionState = bridgeState;
-    if (bridgeState !== 'connected') {
+    this.videoConnectionState = this.videoAvailable ? bridgeState : 'unavailable';
+    if (this.videoConnectionState !== 'connected') {
       this.reason = 'Meta glasses unavailable';
     }
   }
 
-  startSampling() {
-    if (this.pollingInterval || this.connectionState !== 'connected') {
+  async startVideoCapture() {
+    if (this.pollingInterval || this.videoConnectionState !== 'connected') {
       return;
     }
 
-    this.active = true;
-    void metaWearablesBridge.startCameraSampling(SAMPLE_INTERVAL_MS);
+    this.videoActive = true;
+    await metaWearablesBridge.startCameraSampling(SAMPLE_INTERVAL_MS);
     void this.pollLatestFrame();
     this.pollingInterval = setInterval(() => {
       void this.pollLatestFrame();
     }, SAMPLE_INTERVAL_MS);
   }
 
-  stopSampling() {
-    this.active = false;
+  async stopVideoCapture() {
+    this.videoActive = false;
 
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
     }
 
-    void metaWearablesBridge.stopCameraSampling();
+    await metaWearablesBridge.stopCameraSampling();
+  }
+
+  async startAudioCapture() {
+    return;
+  }
+
+  async stopAudioCapture() {
+    return null;
   }
 
   getLatestFrame() {
     return this.latestFrame;
   }
 
-  getStatus(): FrameProviderStatus {
+  getLatestAudio() {
+    return null;
+  }
+
+  getStatus(): InputSourceStatus {
     return {
       kind: 'meta_glasses',
-      available: this.available,
-      active: this.active,
-      connectionState: this.connectionState,
-      lastFrameAt: this.latestFrame?.capturedAt ?? null,
-      statusLabel:
-        this.connectionState === 'connected'
-          ? 'Meta glasses connected'
-          : 'Meta glasses unavailable',
+      statusLabel: this.reason,
       reason: this.reason,
+      video: {
+        available: this.videoAvailable,
+        active: this.videoActive,
+        connectionState: this.videoConnectionState,
+        reason: this.videoAvailable
+          ? this.reason
+          : 'Meta wearables bridge unavailable',
+      },
+      audio: {
+        available: this.audioAvailable,
+        active: false,
+        connectionState: this.audioConnectionState,
+        reason: this.audioAvailable
+          ? 'Meta glasses microphone available'
+          : 'Meta glasses microphone unavailable',
+      },
+      lastFrameAt: this.latestFrame?.capturedAt ?? null,
+      lastAudioAt: null,
     };
   }
 }
 
-export const metaGlassesProvider = new MetaGlassesFrameProvider();
+export const metaWearablesSource = new MetaWearablesSource();

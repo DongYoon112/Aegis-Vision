@@ -36,10 +36,9 @@ import type { MemoryContext, SessionMemory } from '../session/types';
 import { elevenLabsSTT } from '../services/elevenlabsSTT';
 import { elevenLabsTTS } from '../services/elevenlabsTTS';
 import { providerManager } from '../services/frameProvider';
-import type { FrameProvider, FrameProviderStatus } from '../services/frameProvider/types';
+import type { SourceManagerStatus } from '../services/frameProvider/types';
 import { openAIService } from '../services/openai';
 import { player } from '../services/player';
-import { recorder } from '../services/recorder';
 import { visionSignals } from '../services/visionSignals';
 import { localVisionDebug } from '../services/localVision';
 import type { SessionState } from '../types/session';
@@ -55,13 +54,63 @@ const sleep = (ms: number) =>
 const stringifyValue = (value: unknown, placeholder = '{}') =>
   value ? JSON.stringify(value, null, 2) : placeholder;
 
-const defaultProviderStatus: FrameProviderStatus = {
-  kind: medbudEnv.useMocks ? 'mock' : 'expo_camera',
-  available: true,
-  active: false,
-  connectionState: medbudEnv.useMocks ? 'connected' : 'disconnected',
-  lastFrameAt: null,
-  statusLabel: medbudEnv.useMocks ? 'Mock device active' : 'Using phone camera fallback',
+const defaultProviderStatus: SourceManagerStatus = {
+  activeVideoSource: medbudEnv.useMocks ? 'mock' : 'phone',
+  activeAudioSource: medbudEnv.useMocks ? 'mock' : 'phone',
+  selectedMode: medbudEnv.useMocks ? 'mock' : 'phone_only',
+  mixedModeActive: false,
+  fallbackActive: !medbudEnv.useMocks,
+  fallbackReason: medbudEnv.useMocks ? null : 'Meta glasses unavailable',
+  lastConnectionError: null,
+  lastConnectionAttemptAt: null,
+  lastAttemptedSource: null,
+  connectionAttempts: 0,
+  availability: {
+    meta: {
+      video: false,
+      audio: false,
+    },
+    phone: {
+      video: true,
+      audio: true,
+    },
+  },
+  sources: {
+    meta: {
+      kind: 'meta_glasses',
+      statusLabel: 'Meta wearables bridge unavailable',
+      reason: 'Meta wearables bridge unavailable',
+      video: {
+        available: false,
+        active: false,
+        connectionState: 'unavailable',
+      },
+      audio: {
+        available: false,
+        active: false,
+        connectionState: 'unavailable',
+      },
+      lastFrameAt: null,
+      lastAudioAt: null,
+    },
+    phone: {
+      kind: 'phone',
+      statusLabel: 'Phone fallback ready',
+      video: {
+        available: true,
+        active: false,
+        connectionState: 'connected',
+      },
+      audio: {
+        available: true,
+        active: false,
+        connectionState: 'connected',
+      },
+      lastFrameAt: null,
+      lastAudioAt: null,
+    },
+  },
+  statusLabel: medbudEnv.useMocks ? 'Mock source active' : 'Using phone fallback for live capture',
 };
 
 export function HomeScreen() {
@@ -84,7 +133,7 @@ export function HomeScreen() {
   const [spokenResponse, setSpokenResponse] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [providerStatus, setProviderStatus] =
-    useState<FrameProviderStatus>(defaultProviderStatus);
+    useState<SourceManagerStatus>(defaultProviderStatus);
   const [detectorStatus, setDetectorStatus] = useState(localVisionDebug.getDetectorStatus());
   const [initializingProvider, setInitializingProvider] = useState(true);
 
@@ -101,7 +150,7 @@ export function HomeScreen() {
     const initializeProviders = async () => {
       try {
         await providerManager.initialize();
-        await providerManager.resolveActiveProvider();
+        await providerManager.resolveActiveSources();
         if (mounted) {
           syncProviderStatus();
         }
@@ -126,7 +175,9 @@ export function HomeScreen() {
     return () => {
       mounted = false;
       providerManager.attachExpoCameraRef(null);
-      providerManager.getActiveProvider().stopSampling();
+      const { videoSource, audioSource } = providerManager.getActiveSources();
+      void videoSource.stopVideoCapture();
+      void audioSource.stopAudioCapture();
       void player.stop();
     };
   }, []);
@@ -184,22 +235,29 @@ export function HomeScreen() {
         assertLiveConfig();
       }
 
-      const provider = providerManager.getActiveProvider();
-      const sessionProvider: FrameProvider = provider;
-
-      await sessionProvider.requestPermissions();
+      const { videoSource, audioSource } = await providerManager.resolveActiveSources();
+      if (videoSource.kind === audioSource.kind) {
+        await videoSource.requestPermissions(['video', 'audio']);
+      } else {
+        await videoSource.requestPermissions(['video']);
+        await audioSource.requestPermissions(['audio']);
+      }
 
       setSessionState('listening');
-      sessionProvider.startSampling();
+      await videoSource.startVideoCapture();
       syncProviderStatus();
-      await recorder.startRecording();
+      await audioSource.startAudioCapture();
       await sleep(AUTO_STOP_MS);
 
-      const audio = await recorder.stopRecording();
-      sessionProvider.stopSampling();
-      const sampledFrame = sessionProvider.getLatestFrame();
+      const audio = await audioSource.stopAudioCapture();
+      await videoSource.stopVideoCapture();
+      const sampledFrame = videoSource.getLatestFrame();
       setLatestFrame(sampledFrame);
       syncProviderStatus();
+
+      if (!audio) {
+        throw new Error('No audio clip was captured from the selected input source.');
+      }
 
       setSessionState('transcribing');
       const transcriptText = await elevenLabsSTT.transcribeAudio(audio);
@@ -245,12 +303,16 @@ export function HomeScreen() {
       const synthesizedAudio = await elevenLabsTTS.synthesizeSpeech(rephrased);
       await player.play(synthesizedAudio);
 
-      await providerManager.resolveActiveProvider();
+      await providerManager.resolveActiveSources();
       syncProviderStatus();
       setSessionState('idle');
     } catch (error) {
-      providerManager.getActiveProvider().stopSampling();
-      await providerManager.resolveActiveProvider();
+      const { videoSource, audioSource } = providerManager.getActiveSources();
+      await Promise.allSettled([
+        videoSource.stopVideoCapture(),
+        audioSource.stopAudioCapture(),
+      ]);
+      await providerManager.resolveActiveSources();
       syncProviderStatus();
       await player.stop().catch(() => undefined);
       setSessionState('error');
@@ -261,8 +323,9 @@ export function HomeScreen() {
     }
   };
 
-  const showPhonePreview = providerStatus.kind === 'expo_camera';
-  const showSnapshot = providerStatus.kind === 'meta_glasses' && latestFrame?.uri;
+  const showPhonePreview = providerStatus.activeVideoSource === 'phone';
+  const showSnapshot =
+    providerStatus.activeVideoSource === 'meta_glasses' && latestFrame?.uri;
   const frameFreshness = latestFrame
     ? Date.now() - Date.parse(latestFrame.capturedAt) <= 3000
       ? 'fresh'
@@ -307,13 +370,28 @@ export function HomeScreen() {
         <Text style={styles.cardTitle}>Input Source</Text>
         <Text style={styles.statusLine}>{providerStatus.statusLabel}</Text>
         <Text style={styles.statusMeta}>
-          Active provider: {providerStatus.kind}
+          Active video source: {providerStatus.activeVideoSource ?? 'none'}
         </Text>
         <Text style={styles.statusMeta}>
-          Connection state: {providerStatus.connectionState}
+          Active audio source: {providerStatus.activeAudioSource ?? 'none'}
         </Text>
         <Text style={styles.statusMeta}>
-          Last frame timestamp: {providerStatus.lastFrameAt ?? 'none'}
+          Selected mode: {providerStatus.selectedMode}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Mixed mode active: {providerStatus.mixedModeActive ? 'yes' : 'no'}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Fallback active: {providerStatus.fallbackActive ? 'yes' : 'no'}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Meta video state: {providerStatus.sources.meta.video.connectionState}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Meta audio state: {providerStatus.sources.meta.audio.connectionState}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Last frame timestamp: {latestFrame?.capturedAt ?? providerStatus.sources.meta.lastFrameAt ?? providerStatus.sources.phone.lastFrameAt ?? 'none'}
         </Text>
         <Text style={styles.statusMeta}>
           Detector backend: {detectorStatus.backend}
@@ -326,6 +404,16 @@ export function HomeScreen() {
         </Text>
         {detectorStatus.reason ? (
           <Text style={styles.statusMeta}>Detector reason: {detectorStatus.reason}</Text>
+        ) : null}
+        {providerStatus.fallbackReason ? (
+          <Text style={styles.statusMeta}>
+            Fallback reason: {providerStatus.fallbackReason}
+          </Text>
+        ) : null}
+        {providerStatus.lastConnectionError ? (
+          <Text style={styles.statusMeta}>
+            Last connection error: {providerStatus.lastConnectionError}
+          </Text>
         ) : null}
         {providerStatus.reason ? (
           <Text style={styles.statusMeta}>Reason: {providerStatus.reason}</Text>
@@ -386,7 +474,7 @@ export function HomeScreen() {
         ) : (
           <View style={[styles.cameraFrame, styles.placeholderFrame]}>
             <Text style={styles.placeholderText}>
-              {providerStatus.kind === 'mock'
+              {providerStatus.activeVideoSource === 'mock'
                 ? 'Mock frame source active'
                 : 'No live phone preview while glasses are active'}
             </Text>
@@ -398,6 +486,11 @@ export function HomeScreen() {
       </View>
 
       <TranscriptCard transcript={transcript} />
+      <JsonCard
+        title="Source Manager"
+        json={stringifyValue(providerStatus)}
+        placeholder='{\n  "activeVideoSource": "phone",\n  "activeAudioSource": "phone",\n  "selectedMode": "phone_only",\n  "mixedModeActive": false,\n  "fallbackActive": true,\n  "fallbackReason": "",\n  "lastConnectionError": null,\n  "lastConnectionAttemptAt": null,\n  "lastAttemptedSource": null,\n  "connectionAttempts": 0,\n  "availability": {\n    "meta": {\n      "video": false,\n      "audio": false\n    },\n    "phone": {\n      "video": true,\n      "audio": true\n    }\n  },\n  "sources": {\n    "meta": {\n      "kind": "meta_glasses",\n      "statusLabel": "",\n      "video": {\n        "available": false,\n        "active": false,\n        "connectionState": "unavailable"\n      },\n      "audio": {\n        "available": false,\n        "active": false,\n        "connectionState": "unavailable"\n      },\n      "lastFrameAt": null,\n      "lastAudioAt": null\n    },\n    "phone": {\n      "kind": "phone",\n      "statusLabel": "",\n      "video": {\n        "available": true,\n        "active": false,\n        "connectionState": "connected"\n      },\n      "audio": {\n        "available": true,\n        "active": false,\n        "connectionState": "connected"\n      },\n      "lastFrameAt": null,\n      "lastAudioAt": null\n    }\n  },\n  "statusLabel": ""\n}'
+      />
       <JsonCard
         title="Parser Output"
         json={stringifyValue(parserOutput)}

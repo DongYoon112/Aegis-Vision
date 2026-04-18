@@ -52,7 +52,7 @@ export class ExpoCameraSampler {
         capturedAt: new Date().toISOString(),
         width: typeof picture.width === 'number' ? picture.width : null,
         height: typeof picture.height === 'number' ? picture.height : null,
-        source: 'expo_camera',
+        source: 'phone',
       };
     } finally {
       this.captureInFlight = false;

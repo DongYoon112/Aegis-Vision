@@ -1,7 +1,7 @@
 import { NativeModules } from 'react-native';
 
 import type { CameraFrame } from '../protocol/types';
-import type { FrameProviderConnectionState } from './frameProvider/types';
+import type { InputConnectionState } from './frameProvider/types';
 
 export interface MetaWearablesBridge {
   initialize(): Promise<void>;
@@ -11,7 +11,7 @@ export interface MetaWearablesBridge {
   startCameraSampling(intervalMs: number): Promise<void>;
   stopCameraSampling(): Promise<void>;
   getLatestFrame(): Promise<CameraFrame | null>;
-  getConnectionState(): Promise<FrameProviderConnectionState>;
+  getConnectionState(): Promise<InputConnectionState>;
 }
 
 type NativeMetaWearablesModule = {
@@ -22,7 +22,7 @@ type NativeMetaWearablesModule = {
   startCameraSampling?: (intervalMs: number) => Promise<void>;
   stopCameraSampling?: () => Promise<void>;
   getLatestFrame?: () => Promise<CameraFrame | null>;
-  getConnectionState?: () => Promise<FrameProviderConnectionState>;
+  getConnectionState?: () => Promise<InputConnectionState>;
 };
 
 const nativeModule = (NativeModules as { MetaWearablesBridge?: NativeMetaWearablesModule })
@@ -114,13 +114,13 @@ class StubMetaWearablesBridge implements MetaWearablesBridge {
 
   async getConnectionState() {
     if (!nativeModule?.getConnectionState) {
-      return 'disconnected';
+      return 'unavailable';
     }
 
     try {
       return await nativeModule.getConnectionState();
     } catch {
-      return 'error';
+      return 'failed';
     }
   }
 }

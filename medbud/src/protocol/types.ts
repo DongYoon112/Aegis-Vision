@@ -16,7 +16,7 @@ export type CameraFrame = {
   capturedAt: string;
   width: number | null;
   height: number | null;
-  source?: 'meta_glasses' | 'expo_camera' | 'mock';
+  source?: 'meta_glasses' | 'phone' | 'mock';
 };
 
 export type ParserOutput = {

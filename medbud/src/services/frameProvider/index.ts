@@ -1,13 +1,56 @@
 import { medbudEnv } from '../../utils/env';
 import type { ExpoCameraRefLike } from '../camera';
-import { expoCameraProvider } from './expoCameraProvider';
-import { metaGlassesProvider } from './metaGlassesProvider';
-import { mockFrameProvider } from './mockProvider';
-import type { FrameProvider, FrameProviderStatus } from './types';
+import { phoneFallbackSource } from './expoCameraProvider';
+import { metaWearablesSource } from './metaGlassesProvider';
+import { mockInputSource } from './mockProvider';
+import type { InputSource, SourceManagerStatus } from './types';
 
-class FrameProviderManager {
-  private activeProvider: FrameProvider = expoCameraProvider;
+class SourceManager {
+  private activeVideoSource: InputSource = phoneFallbackSource;
+  private activeAudioSource: InputSource = phoneFallbackSource;
   private initialized = false;
+  private lastConnectionError: string | null = null;
+  private fallbackReason: string | null = null;
+  private lastConnectionAttemptAt: string | null = null;
+  private lastAttemptedSource: InputSource['kind'] | null = null;
+  private connectionAttempts = 0;
+
+  private setFallbackReason(reason: string | null) {
+    this.fallbackReason = reason;
+  }
+
+  private resolveLiveSelection() {
+    const metaStatus = metaWearablesSource.getStatus();
+
+    this.activeVideoSource =
+      metaStatus.video.available && metaStatus.video.connectionState === 'connected'
+        ? metaWearablesSource
+        : phoneFallbackSource;
+    this.activeAudioSource =
+      metaStatus.audio.available && metaStatus.audio.connectionState === 'connected'
+        ? metaWearablesSource
+        : phoneFallbackSource;
+
+    if (this.activeVideoSource.kind === 'phone' && this.activeAudioSource.kind === 'phone') {
+      this.setFallbackReason(
+        metaStatus.video.available
+          ? metaStatus.reason ?? 'Meta glasses unavailable'
+          : 'Meta glasses unavailable'
+      );
+      return;
+    }
+
+    if (this.activeVideoSource.kind === 'meta_glasses' && this.activeAudioSource.kind === 'phone') {
+      this.setFallbackReason(
+        metaStatus.audio.available
+          ? 'Meta glasses audio is not connected'
+          : 'Phone audio fallback active because Meta audio is unavailable'
+      );
+      return;
+    }
+
+    this.setFallbackReason(null);
+  }
 
   async initialize() {
     if (this.initialized) {
@@ -15,54 +58,47 @@ class FrameProviderManager {
     }
 
     if (medbudEnv.useMocks) {
-      this.activeProvider = mockFrameProvider;
+      this.activeVideoSource = mockInputSource;
+      this.activeAudioSource = mockInputSource;
       this.initialized = true;
       return;
     }
 
-    await metaGlassesProvider.initialize();
-    await metaGlassesProvider.connect?.();
-    await this.resolveActiveProvider();
+    await metaWearablesSource.initialize();
+
+    try {
+      await this.connectGlasses();
+    } catch {
+      this.resolveLiveSelection();
+    }
+
+    await this.resolveActiveSources();
     this.initialized = true;
   }
 
-  async resolveActiveProvider() {
+  async resolveActiveSources() {
     if (medbudEnv.useMocks) {
-      this.activeProvider = mockFrameProvider;
-      return this.activeProvider;
+      this.activeVideoSource = mockInputSource;
+      this.activeAudioSource = mockInputSource;
+      return {
+        videoSource: this.activeVideoSource,
+        audioSource: this.activeAudioSource,
+      };
     }
 
-    const metaStatus = metaGlassesProvider.getStatus();
+    this.resolveLiveSelection();
 
-    if (metaStatus.available && metaStatus.connectionState === 'connected') {
-      this.activeProvider = metaGlassesProvider;
-    } else {
-      this.activeProvider = expoCameraProvider;
-    }
-
-    return this.activeProvider;
+    return {
+      videoSource: this.activeVideoSource,
+      audioSource: this.activeAudioSource,
+    };
   }
 
-  getActiveProvider() {
-    return this.activeProvider;
-  }
-
-  getStatus(): FrameProviderStatus {
-    const activeStatus = this.activeProvider.getStatus();
-
-    if (activeStatus.kind === 'expo_camera' && !medbudEnv.useMocks) {
-      const metaStatus = metaGlassesProvider.getStatus();
-
-      if (!metaStatus.available || metaStatus.connectionState !== 'connected') {
-        return {
-          ...activeStatus,
-          statusLabel: 'Using phone camera fallback',
-          reason: metaStatus.reason ?? 'Meta glasses unavailable',
-        };
-      }
-    }
-
-    return activeStatus;
+  getActiveSources() {
+    return {
+      videoSource: this.activeVideoSource,
+      audioSource: this.activeAudioSource,
+    };
   }
 
   async connectGlasses() {
@@ -70,8 +106,21 @@ class FrameProviderManager {
       return;
     }
 
-    await metaGlassesProvider.connect?.();
-    await this.resolveActiveProvider();
+    this.lastAttemptedSource = 'meta_glasses';
+    this.lastConnectionAttemptAt = new Date().toISOString();
+    this.connectionAttempts += 1;
+    this.lastConnectionError = null;
+
+    try {
+      await metaWearablesSource.connect?.();
+    } catch (error) {
+      this.lastConnectionError =
+        error instanceof Error ? error.message : 'Meta glasses connection failed';
+      this.resolveLiveSelection();
+      throw error;
+    }
+
+    this.resolveLiveSelection();
   }
 
   async disconnectGlasses() {
@@ -79,13 +128,97 @@ class FrameProviderManager {
       return;
     }
 
-    await metaGlassesProvider.disconnect?.();
-    await this.resolveActiveProvider();
+    this.lastAttemptedSource = 'meta_glasses';
+    this.lastConnectionAttemptAt = new Date().toISOString();
+
+    await metaWearablesSource.disconnect?.();
+    this.resolveLiveSelection();
   }
 
   attachExpoCameraRef(ref: ExpoCameraRefLike | null) {
-    expoCameraProvider.attachCameraRef(ref);
+    phoneFallbackSource.attachCameraRef(ref);
+  }
+
+  getStatus(): SourceManagerStatus {
+    const metaStatus = metaWearablesSource.getStatus();
+    const phoneStatus = phoneFallbackSource.getStatus();
+    const mockStatus = medbudEnv.useMocks ? mockInputSource.getStatus() : undefined;
+
+    if (medbudEnv.useMocks) {
+      return {
+        activeVideoSource: 'mock',
+        activeAudioSource: 'mock',
+        selectedMode: 'mock',
+        mixedModeActive: false,
+        fallbackActive: false,
+        fallbackReason: null,
+        lastConnectionError: this.lastConnectionError,
+        lastConnectionAttemptAt: this.lastConnectionAttemptAt,
+        lastAttemptedSource: this.lastAttemptedSource,
+        connectionAttempts: this.connectionAttempts,
+        availability: {
+          meta: {
+            video: false,
+            audio: false,
+          },
+          phone: {
+            video: false,
+            audio: false,
+          },
+        },
+        sources: {
+          meta: metaStatus,
+          phone: phoneStatus,
+          mock: mockStatus,
+        },
+        statusLabel: 'Mock source active',
+      };
+    }
+
+    const activeVideoSource = this.activeVideoSource.kind;
+    const activeAudioSource = this.activeAudioSource.kind;
+    const mixedModeActive = activeVideoSource !== activeAudioSource;
+    const selectedMode =
+      activeVideoSource === 'meta_glasses' && activeAudioSource === 'phone'
+        ? 'meta_video_phone_audio'
+        : 'phone_only';
+    const fallbackActive =
+      activeVideoSource === 'phone' ||
+      activeAudioSource === 'phone';
+    const statusLabel =
+      selectedMode === 'meta_video_phone_audio'
+        ? 'Using Meta glasses video with phone audio fallback'
+        : 'Using phone fallback for live capture';
+
+    return {
+      activeVideoSource,
+      activeAudioSource,
+      selectedMode,
+      mixedModeActive,
+      fallbackActive,
+      fallbackReason: this.fallbackReason,
+      lastConnectionError: this.lastConnectionError,
+      lastConnectionAttemptAt: this.lastConnectionAttemptAt,
+      lastAttemptedSource: this.lastAttemptedSource,
+      connectionAttempts: this.connectionAttempts,
+      availability: {
+        meta: {
+          video: metaStatus.video.available,
+          audio: metaStatus.audio.available,
+        },
+        phone: {
+          video: phoneStatus.video.available,
+          audio: phoneStatus.audio.available,
+        },
+      },
+      sources: {
+        meta: metaStatus,
+        phone: phoneStatus,
+      },
+      statusLabel,
+      reason: this.lastConnectionError ?? this.fallbackReason ?? metaStatus.reason,
+    };
   }
 }
 
-export const providerManager = new FrameProviderManager();
+export const providerManager = new SourceManager();

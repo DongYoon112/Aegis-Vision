@@ -1,14 +1,24 @@
 import type { CameraFrame } from '../../protocol/types';
-import type { FrameProvider, FrameProviderStatus } from './types';
+import type { RecordedAudio } from '../../types/session';
+import type { InputChannel, InputSource, InputSourceStatus } from './types';
 
 const SAMPLE_INTERVAL_MS = 1500;
 
-class MockFrameProvider implements FrameProvider {
-  private active = false;
+class MockInputSource implements InputSource {
+  readonly kind = 'mock' as const;
+
+  private videoActive = false;
+  private audioActive = false;
   private latestFrame: CameraFrame | null = null;
+  private latestAudio: RecordedAudio | null = null;
+  private lastAudioAt: string | null = null;
   private samplingInterval: ReturnType<typeof setInterval> | null = null;
 
-  async requestPermissions() {
+  isAvailable() {
+    return true;
+  }
+
+  async requestPermissions(_channels: InputChannel[] = ['video', 'audio']) {
     return;
   }
 
@@ -22,20 +32,20 @@ class MockFrameProvider implements FrameProvider {
     };
   }
 
-  startSampling() {
+  async startVideoCapture() {
     if (this.samplingInterval) {
       return;
     }
 
-    this.active = true;
+    this.videoActive = true;
     this.latestFrame = this.createFrame();
     this.samplingInterval = setInterval(() => {
       this.latestFrame = this.createFrame();
     }, SAMPLE_INTERVAL_MS);
   }
 
-  stopSampling() {
-    this.active = false;
+  async stopVideoCapture() {
+    this.videoActive = false;
 
     if (this.samplingInterval) {
       clearInterval(this.samplingInterval);
@@ -43,20 +53,51 @@ class MockFrameProvider implements FrameProvider {
     }
   }
 
+  async startAudioCapture() {
+    this.audioActive = true;
+  }
+
+  async stopAudioCapture() {
+    if (!this.audioActive) {
+      return this.latestAudio;
+    }
+
+    this.audioActive = false;
+    this.latestAudio = {
+      uri: 'mock://audio/latest',
+      fileName: 'mock-audio.m4a',
+      mimeType: 'audio/mp4',
+    };
+    this.lastAudioAt = new Date().toISOString();
+    return this.latestAudio;
+  }
+
   getLatestFrame() {
     return this.latestFrame;
   }
 
-  getStatus(): FrameProviderStatus {
+  getLatestAudio() {
+    return this.latestAudio;
+  }
+
+  getStatus(): InputSourceStatus {
     return {
       kind: 'mock',
-      available: true,
-      active: this.active,
-      connectionState: 'connected',
-      lastFrameAt: this.latestFrame?.capturedAt ?? null,
       statusLabel: 'Mock device active',
+      video: {
+        available: true,
+        active: this.videoActive,
+        connectionState: 'connected',
+      },
+      audio: {
+        available: true,
+        active: this.audioActive,
+        connectionState: 'connected',
+      },
+      lastFrameAt: this.latestFrame?.capturedAt ?? null,
+      lastAudioAt: this.lastAudioAt,
     };
   }
 }
 
-export const mockFrameProvider = new MockFrameProvider();
+export const mockInputSource = new MockInputSource();
