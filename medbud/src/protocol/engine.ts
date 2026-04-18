@@ -1,63 +1,64 @@
 import type {
+  ActionSkipReason,
   CasePhase,
   MergedState,
   NullableBoolean,
+  ProtocolActionDebug,
   ProtocolDecision,
   ProtocolPriority,
+  ProtocolSelectedAction,
 } from './types';
 import {
   getActionForPromptType,
-  getFieldForAction,
   getPromptTypeForDecision,
-  getPromptTypeForField,
+  type PromptType,
 } from './decisionMetadata';
 import type { TrustAssessment } from './trustTypes';
 import type { CooldownStrength, MemoryContext } from '../session/types';
 
 const CONFIRMATION_COOLDOWN_MS = 8000;
 const MATERIAL_CONFIDENCE_DELTA = 0.12;
+const HIGH_URGENCY_CONFIDENCE = 0.8;
+const PERSISTENCE_CYCLES = 2;
+
+const PRIORITY_ORDER: ProtocolPriority[] = ['low', 'medium', 'high', 'critical'];
+
+const ACTION_PRIORITY_ORDER: ProtocolSelectedAction[] = [
+  'control_bleeding',
+  'airway_or_breathing_support',
+  'check_responsiveness',
+  'confirm_breathing',
+  'confirm_responsiveness',
+  'monitoring',
+];
 
 const makeDecision = (
   step_id: string,
   priority: ProtocolDecision['priority'],
   instruction: string,
   reason: string,
-  needs_confirmation: boolean
+  needs_confirmation: boolean,
+  selectedAction: ProtocolSelectedAction,
+  overrides: Partial<ProtocolDecision> = {}
 ): ProtocolDecision => ({
   step_id,
   priority,
   instruction,
   reason,
   needs_confirmation,
-  prompt_type: needs_confirmation ? getPromptTypeForDecision({ step_id, needs_confirmation }) : null,
+  selectedAction,
+  consideredActions: ACTION_PRIORITY_ORDER,
+  cooldown_affected: false,
+  actionDebug: {
+    priorityOrder: ACTION_PRIORITY_ORDER,
+    skipped: [],
+  },
+  prompt_type: needs_confirmation
+    ? getPromptTypeForDecision({ step_id, needs_confirmation })
+    : null,
   cooldown_suppressed: false,
+  ...overrides,
 });
-
-const PRIORITY_ORDER: ProtocolPriority[] = ['low', 'medium', 'high', 'critical'];
-
-const isCriticalStep = (stepId: string) =>
-  ['control_bleeding', 'check_breathing', 'check_responsive', 'confirm_state'].includes(
-    stepId
-  );
-
-const getFallbackPromptType = (
-  state: MergedState,
-  trust: TrustAssessment
-) => {
-  if (trust.fields.severe_bleeding.needsConfirmation && state.severe_bleeding !== false) {
-    return 'confirm_bleeding';
-  }
-
-  if (trust.fields.breathing.needsConfirmation) {
-    return 'confirm_breathing';
-  }
-
-  if (trust.fields.responsiveness.needsConfirmation) {
-    return 'confirm_responsiveness';
-  }
-
-  return null;
-};
 
 const normalizeNullableBoolean = (value: NullableBoolean | 'unknown' | unknown): NullableBoolean =>
   value === true || value === false ? value : null;
@@ -119,6 +120,26 @@ const getPhaseForStep = (stepId: string | null): CasePhase | null => {
   return null;
 };
 
+const getPhaseForSelectedAction = (
+  selectedAction: ProtocolSelectedAction
+): CasePhase => {
+  switch (selectedAction) {
+    case 'control_bleeding':
+      return 'bleeding_control';
+    case 'airway_or_breathing_support':
+    case 'confirm_breathing':
+      return 'airway_check';
+    case 'check_responsiveness':
+    case 'confirm_responsiveness':
+      return 'initial_assessment';
+    case 'monitoring':
+      return 'stabilization';
+    case 'aim_camera':
+    default:
+      return 'unknown';
+  }
+};
+
 const getPreviousPhase = (memory: MemoryContext): CasePhase | null => {
   const lastPhase = getPhaseForStep(memory.last_step_id);
   if (lastPhase) {
@@ -145,95 +166,6 @@ const getStabilizationInstruction = (turnCount: number) => {
   }
 
   return 'Monitor their condition.';
-};
-
-const determinePhase = (state: MergedState, previousPhase: CasePhase | null): CasePhase => {
-  if (state.severe_bleeding === true) {
-    return 'bleeding_control';
-  }
-
-  if (previousPhase === 'bleeding_control' && state.severe_bleeding !== false) {
-    return 'bleeding_control';
-  }
-
-  if (previousPhase === 'bleeding_control' && state.severe_bleeding === false) {
-    return 'airway_check';
-  }
-
-  if (state.breathing === null) {
-    return 'airway_check';
-  }
-
-  if (previousPhase === 'airway_check' && state.breathing !== true) {
-    return 'airway_check';
-  }
-
-  if (previousPhase === 'airway_check' && state.breathing === true) {
-    return 'stabilization';
-  }
-
-  if (state.responsive === null) {
-    return 'initial_assessment';
-  }
-
-  if (
-    previousPhase === 'initial_assessment' &&
-    state.responsive === null &&
-    state.breathing !== null
-  ) {
-    return 'initial_assessment';
-  }
-
-  return 'stabilization';
-};
-
-const getBaseDecisionForPhase = (
-  phase: CasePhase,
-  state: MergedState,
-  memory: MemoryContext
-): ProtocolDecision => {
-  switch (phase) {
-    case 'bleeding_control':
-      return makeDecision(
-        'control_bleeding',
-        'critical',
-        'Apply pressure to the wound now.',
-        'Severe bleeding requires immediate bleeding control.',
-        false
-      );
-    case 'airway_check':
-      return makeDecision(
-        'check_breathing',
-        'critical',
-        'Check if they are breathing.',
-        'Breathing status is the next priority once bleeding is controlled or absent.',
-        false
-      );
-    case 'initial_assessment':
-      return makeDecision(
-        'check_responsive',
-        'high',
-        'Check if they respond.',
-        'Responsiveness should be checked before moving into stabilization.',
-        false
-      );
-    case 'stabilization':
-      return makeDecision(
-        'reassess',
-        'medium',
-        getStabilizationInstruction(memory.turn_count),
-        'Stabilization requires repeated condition checks.',
-        false
-      );
-    default:
-      return makeDecision(
-        'reassess',
-        'medium',
-        getStabilizationInstruction(memory.turn_count),
-        'Fallback stabilization guidance when the case phase is unclear.',
-        false
-      );
-  }
 };
 
 const shouldUseVisibilityOverride = (state: MergedState) =>
@@ -333,124 +265,141 @@ const getFollowUpInstruction = (
     : 'Can you check if they respond?';
 };
 
-const makeFollowUpDecision = (
-  stepId: string,
+const getPromptTypeForSelectedAction = (
+  selectedAction: ProtocolSelectedAction
+): PromptType | null => {
+  switch (selectedAction) {
+    case 'confirm_breathing':
+      return 'confirm_breathing';
+    case 'confirm_responsiveness':
+      return 'confirm_responsiveness';
+    default:
+      return null;
+  }
+};
+
+const getBasePriorityForSelectedAction = (
+  selectedAction: ProtocolSelectedAction
+): ProtocolPriority => {
+  switch (selectedAction) {
+    case 'control_bleeding':
+      return 'critical';
+    case 'airway_or_breathing_support':
+      return 'critical';
+    case 'check_responsiveness':
+      return 'high';
+    case 'confirm_breathing':
+    case 'confirm_responsiveness':
+      return 'low';
+    case 'aim_camera':
+      return 'medium';
+    case 'monitoring':
+    default:
+      return 'medium';
+  }
+};
+
+const getStepIdForSelectedAction = (
+  selectedAction: ProtocolSelectedAction
+) => {
+  switch (selectedAction) {
+    case 'control_bleeding':
+      return 'control_bleeding';
+    case 'airway_or_breathing_support':
+      return 'check_breathing';
+    case 'check_responsiveness':
+      return 'check_responsive';
+    case 'confirm_breathing':
+    case 'confirm_responsiveness':
+      return 'confirm_state';
+    case 'aim_camera':
+      return 'aim_camera';
+    case 'monitoring':
+    default:
+      return 'reassess';
+  }
+};
+
+const getInstructionForSelectedAction = (
+  selectedAction: ProtocolSelectedAction,
+  state: MergedState,
+  memory: MemoryContext
+) => {
+  switch (selectedAction) {
+    case 'control_bleeding':
+      return 'Apply pressure to the wound now.';
+    case 'airway_or_breathing_support':
+      return 'Check if they are breathing.';
+    case 'check_responsiveness':
+      return 'Check if they respond.';
+    case 'confirm_breathing':
+      return getFollowUpInstruction('check_breathing', state, 2);
+    case 'confirm_responsiveness':
+      return getFollowUpInstruction('check_responsive', state, 2);
+    case 'aim_camera':
+      return 'Point the camera at the casualty.';
+    case 'monitoring':
+    default:
+      return getStabilizationInstruction(memory.turn_count);
+  }
+};
+
+const makeSelectedDecision = (
+  selectedAction: ProtocolSelectedAction,
   state: MergedState,
   memory: MemoryContext,
   reason: string,
-  promptType: ProtocolDecision['prompt_type'] = null
+  actionDebug: ProtocolActionDebug,
+  cooldownAffected: boolean,
+  overrides: Partial<ProtocolDecision> = {}
+): ProtocolDecision => {
+  const needsConfirmation =
+    selectedAction === 'confirm_breathing' ||
+    selectedAction === 'confirm_responsiveness';
+
+  return makeDecision(
+    getStepIdForSelectedAction(selectedAction),
+    getBasePriorityForSelectedAction(selectedAction),
+    getInstructionForSelectedAction(selectedAction, state, memory),
+    reason,
+    needsConfirmation,
+    selectedAction,
+    {
+      consideredActions: ACTION_PRIORITY_ORDER,
+      cooldown_affected: cooldownAffected,
+      actionDebug,
+      prompt_type: getPromptTypeForSelectedAction(selectedAction),
+      cooldown_suppressed: cooldownAffected,
+      ...overrides,
+    }
+  );
+};
+
+const addSkippedAction = (
+  skipped: ProtocolActionDebug['skipped'],
+  action: ProtocolSelectedAction,
+  reason: ActionSkipReason
 ) => {
-  const promptAction = getActionForPromptType(promptType ?? null);
-  const instructionStep =
-    stepId === 'confirm_state' && promptAction ? promptAction : stepId;
-
-  return {
-    ...makeDecision(
-      `${stepId}_follow_up`,
-      stepId === 'control_bleeding' || stepId === 'check_breathing' ? 'high' : 'low',
-      getFollowUpInstruction(instructionStep, state, getFollowUpTier(memory.turn_count)),
-      reason,
-      true
-    ),
-    prompt_type:
-      promptType ??
-      getPromptTypeForDecision({
-        step_id: `${stepId}_follow_up`,
-        needs_confirmation: true,
-      }),
-  };
+  skipped.push({ action, reason });
 };
 
-const makeReassessDecision = (
-  instruction: string,
-  reason: string,
-  priority: ProtocolDecision['priority'] = 'low'
-) => makeDecision('reassess', priority, instruction, reason, true);
-
-const getConfirmationDecision = (
-  promptType: NonNullable<ProtocolDecision['prompt_type']>,
-  state: MergedState,
-  reason: string
-): ProtocolDecision => {
-  switch (promptType) {
-    case 'confirm_bleeding':
-      return {
-        ...makeDecision(
-          'control_bleeding',
-          'high',
-          getFollowUpInstruction('control_bleeding', state, 2),
-          reason,
-          true
-        ),
-        prompt_type: promptType,
-      };
-    case 'confirm_breathing':
-      return {
-        ...makeDecision(
-          'confirm_state',
-          'low',
-          getFollowUpInstruction('check_breathing', state, 2),
-          reason,
-          true
-        ),
-        prompt_type: promptType,
-      };
-    case 'confirm_responsiveness':
-      return {
-        ...makeDecision(
-          'confirm_state',
-          'low',
-          getFollowUpInstruction('check_responsive', state, 2),
-          reason,
-          true
-        ),
-        prompt_type: promptType,
-      };
-    default:
-      return {
-        ...makeDecision(
-          'confirm_state',
-          'low',
-          'Confirm what you see now.',
-          reason,
-          true
-        ),
-        prompt_type: promptType,
-      };
-  }
-};
-
-const maybeConvertBlockedDecision = (
-  decision: ProtocolDecision,
-  state: MergedState,
-  trust: TrustAssessment
-): ProtocolDecision => {
-  const field = getFieldForAction(decision.step_id);
-
-  if (!field || trust.allowedActions.includes(decision.step_id)) {
-    return decision;
-  }
-
-  if (trust.blockedActions.includes(decision.step_id) === false) {
-    return decision;
-  }
-
-  const promptType = getPromptTypeForField(field);
-  if (!promptType) {
-    return decision;
-  }
-
-  return getConfirmationDecision(promptType, state, trust.fields[field].reason);
-};
+const removeSkippedAction = (
+  skipped: ProtocolActionDebug['skipped'],
+  action: ProtocolSelectedAction
+) => skipped.filter((entry) => entry.action !== action);
 
 const evidenceChangedMaterially = (
-  promptType: NonNullable<ProtocolDecision['prompt_type']>,
+  promptType: PromptType,
   state: MergedState,
   trust: TrustAssessment,
   memory: MemoryContext
 ) => {
   const action = getActionForPromptType(promptType);
-  const field = getFieldForAction(action ?? '');
+  const field = action ? (action === 'control_bleeding'
+    ? 'severe_bleeding'
+    : action === 'check_breathing'
+      ? 'breathing'
+      : 'responsiveness') : null;
 
   if (!field) {
     return false;
@@ -479,52 +428,357 @@ const evidenceChangedMaterially = (
   );
 };
 
-const applyConfirmationCooldown = (
-  decision: ProtocolDecision,
+const isConfirmationSuppressedByCooldown = (
+  promptType: PromptType,
   state: MergedState,
   trust: TrustAssessment,
   memory: MemoryContext
-): ProtocolDecision => {
-  const promptType = decision.prompt_type ?? getPromptTypeForDecision(decision);
-
-  if (!promptType || memory.lastPromptType !== promptType || memory.lastPromptAt === null) {
-    return decision;
+) => {
+  if (memory.lastPromptType !== promptType || memory.lastPromptAt === null) {
+    return false;
   }
 
   const cooldownActive = Date.now() - memory.lastPromptAt < CONFIRMATION_COOLDOWN_MS;
-  if (!cooldownActive || evidenceChangedMaterially(promptType, state, trust, memory)) {
-    return decision;
+  if (!cooldownActive) {
+    return false;
   }
 
-  const action = getActionForPromptType(promptType);
-  if (action && trust.allowedActions.includes(action)) {
-    return {
-      ...makeDecision(
-        action,
-        decision.priority,
-        action === 'control_bleeding'
-          ? 'Apply pressure to the wound now.'
-          : action === 'check_breathing'
-            ? 'Check if they are breathing.'
-            : 'Check if they respond.',
-        'Confirmation prompt suppressed during cooldown; keeping the allowed field action.',
-        false
-      ),
-      cooldown_suppressed: true,
-      prompt_type: promptType,
-    };
+  return evidenceChangedMaterially(promptType, state, trust, memory) === false;
+};
+
+const getUrgentBypassReason = (
+  state: MergedState,
+  trust: TrustAssessment,
+  memory: MemoryContext
+) => {
+  if (state.severe_bleeding !== true) {
+    return 'severe bleeding is not currently true';
   }
+
+  if (trust.fields.severe_bleeding.confidence < HIGH_URGENCY_CONFIDENCE) {
+    return 'bleeding confidence below urgent threshold';
+  }
+
+  if (memory.severeBleedingConsecutiveTrueCount < PERSISTENCE_CYCLES) {
+    return 'insufficient severe bleeding persistence';
+  }
+
+  if (memory.severeBleedingContradictionRecent) {
+    return 'recent contradiction blocked bypass';
+  }
+
+  if (trust.allowedActions.includes('control_bleeding') === false) {
+    return 'control bleeding is not currently allowed';
+  }
+
+  return 'persistent high-confidence severe bleeding forced control bleeding';
+};
+
+const maybeSelectUrgentBleedingBypass = (
+  state: MergedState,
+  trust: TrustAssessment,
+  memory: MemoryContext
+): ProtocolDecision | null => {
+  const actionDebug: ProtocolActionDebug = {
+    priorityOrder: ACTION_PRIORITY_ORDER,
+    skipped: [],
+  };
+  const urgentBypassReason = getUrgentBypassReason(state, trust, memory);
+
+  if (
+    state.severe_bleeding === true &&
+    trust.fields.severe_bleeding.confidence >= HIGH_URGENCY_CONFIDENCE &&
+    memory.severeBleedingConsecutiveTrueCount >= PERSISTENCE_CYCLES &&
+    memory.severeBleedingContradictionRecent === false &&
+    trust.allowedActions.includes('control_bleeding')
+  ) {
+    for (const trailingAction of ACTION_PRIORITY_ORDER.slice(1)) {
+      addSkippedAction(actionDebug.skipped, trailingAction, 'urgent_bypass_triggered');
+    }
+
+    return makeSelectedDecision(
+      'control_bleeding',
+      state,
+      memory,
+      'Urgent bypass forced control bleeding after persistent high-confidence severe bleeding.',
+      actionDebug,
+      false,
+      {
+        urgent_bypass_activated: true,
+        urgent_bypass_reason: urgentBypassReason,
+        urgent_bypass_confidence: trust.fields.severe_bleeding.confidence,
+        urgent_bypass_persistence_count: memory.severeBleedingConsecutiveTrueCount,
+        urgent_bypass_contradiction_blocked: false,
+      }
+    );
+  }
+
+  const skipReason: ActionSkipReason =
+    state.severe_bleeding !== true
+      ? 'not_allowed'
+      : trust.fields.severe_bleeding.confidence < HIGH_URGENCY_CONFIDENCE
+        ? 'confidence_below_urgent_threshold'
+        : memory.severeBleedingConsecutiveTrueCount < PERSISTENCE_CYCLES
+          ? 'insufficient_persistence'
+          : memory.severeBleedingContradictionRecent
+            ? 'recent_contradiction'
+            : 'control_bleeding_not_allowed';
+
+  addSkippedAction(actionDebug.skipped, 'control_bleeding', skipReason);
+
+  return null;
+};
+
+const selectAction = (
+  state: MergedState,
+  trust: TrustAssessment,
+  memory: MemoryContext
+) => {
+  const urgentBypassDecision = maybeSelectUrgentBleedingBypass(state, trust, memory);
+  if (urgentBypassDecision) {
+    return urgentBypassDecision;
+  }
+
+  const actionDebug: ProtocolActionDebug = {
+    priorityOrder: ACTION_PRIORITY_ORDER,
+    skipped: [
+      {
+        action: 'control_bleeding',
+        reason:
+          state.severe_bleeding !== true
+            ? 'not_allowed'
+            : trust.fields.severe_bleeding.confidence < HIGH_URGENCY_CONFIDENCE
+              ? 'confidence_below_urgent_threshold'
+              : memory.severeBleedingConsecutiveTrueCount < PERSISTENCE_CYCLES
+                ? 'insufficient_persistence'
+                : memory.severeBleedingContradictionRecent
+                  ? 'recent_contradiction'
+                  : 'control_bleeding_not_allowed',
+      },
+    ],
+  };
+  let cooldownAffected = false;
+
+  for (const action of ACTION_PRIORITY_ORDER) {
+    switch (action) {
+      case 'control_bleeding':
+        if (
+          state.severe_bleeding === true &&
+          trust.allowedActions.includes('control_bleeding')
+        ) {
+          actionDebug.skipped = removeSkippedAction(actionDebug.skipped, action);
+          const decision = makeSelectedDecision(
+            action,
+            state,
+            memory,
+            'Severe bleeding action is allowed and highest priority.',
+            actionDebug,
+            cooldownAffected,
+            {
+              urgent_bypass_activated: false,
+              urgent_bypass_reason: getUrgentBypassReason(state, trust, memory),
+              urgent_bypass_confidence: trust.fields.severe_bleeding.confidence,
+              urgent_bypass_persistence_count: memory.severeBleedingConsecutiveTrueCount,
+              urgent_bypass_contradiction_blocked:
+                memory.severeBleedingContradictionRecent,
+            }
+          );
+          for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
+            ACTION_PRIORITY_ORDER.indexOf(action) + 1
+          )) {
+            addSkippedAction(
+              actionDebug.skipped,
+              trailingAction,
+              'severe_bleeding_override'
+            );
+          }
+          return decision;
+        }
+
+        break;
+      case 'airway_or_breathing_support':
+        if (trust.allowedActions.includes('check_breathing')) {
+          const decision = makeSelectedDecision(
+            action,
+            state,
+            memory,
+            'Breathing support is the highest-priority allowed action.',
+            actionDebug,
+            cooldownAffected
+          );
+          for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
+            ACTION_PRIORITY_ORDER.indexOf(action) + 1
+          )) {
+            addSkippedAction(actionDebug.skipped, trailingAction, 'lower_priority_than_selected');
+          }
+          return decision;
+        }
+
+        addSkippedAction(actionDebug.skipped, action, 'not_allowed');
+        break;
+      case 'check_responsiveness':
+        if (trust.allowedActions.includes('check_responsive')) {
+          const decision = makeSelectedDecision(
+            action,
+            state,
+            memory,
+            'Responsiveness check is the highest-priority allowed action.',
+            actionDebug,
+            cooldownAffected
+          );
+          for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
+            ACTION_PRIORITY_ORDER.indexOf(action) + 1
+          )) {
+            addSkippedAction(actionDebug.skipped, trailingAction, 'lower_priority_than_selected');
+          }
+          return decision;
+        }
+
+        addSkippedAction(actionDebug.skipped, action, 'not_allowed');
+        break;
+      case 'confirm_breathing':
+        if (!trust.fields.breathing.needsConfirmation) {
+          addSkippedAction(
+            actionDebug.skipped,
+            action,
+            'field_does_not_need_confirmation'
+          );
+          break;
+        }
+
+        if (
+          isConfirmationSuppressedByCooldown(
+            'confirm_breathing',
+            state,
+            trust,
+            memory
+          )
+        ) {
+          cooldownAffected = true;
+          addSkippedAction(actionDebug.skipped, action, 'cooldown');
+          break;
+        }
+
+        {
+          const decision = makeSelectedDecision(
+            action,
+            state,
+            memory,
+            'Breathing needs confirmation and no higher-priority action is allowed.',
+            actionDebug,
+            cooldownAffected
+          );
+          for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
+            ACTION_PRIORITY_ORDER.indexOf(action) + 1
+          )) {
+            addSkippedAction(actionDebug.skipped, trailingAction, 'lower_priority_than_selected');
+          }
+          return decision;
+        }
+      case 'confirm_responsiveness':
+        if (!trust.fields.responsiveness.needsConfirmation) {
+          addSkippedAction(
+            actionDebug.skipped,
+            action,
+            'field_does_not_need_confirmation'
+          );
+          break;
+        }
+
+        if (
+          isConfirmationSuppressedByCooldown(
+            'confirm_responsiveness',
+            state,
+            trust,
+            memory
+          )
+        ) {
+          cooldownAffected = true;
+          addSkippedAction(actionDebug.skipped, action, 'cooldown');
+          break;
+        }
+
+        {
+          const decision = makeSelectedDecision(
+            action,
+            state,
+            memory,
+            'Responsiveness needs confirmation and no higher-priority action is allowed.',
+            actionDebug,
+            cooldownAffected
+          );
+          for (const trailingAction of ACTION_PRIORITY_ORDER.slice(
+            ACTION_PRIORITY_ORDER.indexOf(action) + 1
+          )) {
+            addSkippedAction(actionDebug.skipped, trailingAction, 'lower_priority_than_selected');
+          }
+          return decision;
+        }
+      case 'monitoring':
+      default: {
+        return makeSelectedDecision(
+          'monitoring',
+          state,
+          memory,
+          'No higher-priority allowed action is available.',
+          actionDebug,
+          cooldownAffected
+        );
+      }
+    }
+  }
+
+  return makeSelectedDecision(
+    'monitoring',
+    state,
+    memory,
+    'No higher-priority allowed action is available.',
+    actionDebug,
+    cooldownAffected
+  );
+};
+
+const makeFollowUpDecision = (
+  decision: ProtocolDecision,
+  state: MergedState,
+  memory: MemoryContext,
+  reason: string
+) => {
+  const promptAction = getActionForPromptType(decision.prompt_type ?? null);
+  const instructionStep =
+    decision.step_id === 'confirm_state' && promptAction ? promptAction : decision.step_id;
 
   return {
-    ...makeReassessDecision(
-      'Give me a quick update on their condition now.',
-      'Repeated confirmation prompt suppressed during cooldown.',
-      'low'
+    ...decision,
+    step_id: `${decision.step_id}_follow_up`,
+    instruction: getFollowUpInstruction(
+      instructionStep,
+      state,
+      getFollowUpTier(memory.turn_count)
     ),
-    cooldown_suppressed: true,
-    prompt_type: promptType,
+    reason,
+    needs_confirmation: true,
   };
 };
+
+const makeMonitoringDecision = (
+  instruction: string,
+  reason: string,
+  baseDecision: ProtocolDecision
+) => ({
+  ...baseDecision,
+  step_id: 'reassess',
+  selectedAction: 'monitoring' as const,
+  instruction,
+  reason,
+  needs_confirmation: true,
+  prompt_type: null,
+});
+
+const isCriticalStep = (stepId: string) =>
+  ['control_bleeding', 'check_breathing', 'check_responsive', 'confirm_state'].includes(
+    stepId
+  );
 
 const applyMemoryGuardrails = (
   decision: ProtocolDecision,
@@ -538,8 +792,9 @@ const applyMemoryGuardrails = (
   }
 
   let repeatStrength = getRepeatStrength(decision, memory);
+  const urgentBleedingBypassActive = decision.urgent_bypass_activated === true;
 
-  if (memory.signalsImproving) {
+  if (memory.signalsImproving && !urgentBleedingBypassActive) {
     repeatStrength =
       repeatStrength === 'strong'
         ? 'weak'
@@ -551,61 +806,60 @@ const applyMemoryGuardrails = (
   const confirmationBias =
     decision.needs_confirmation ||
     memory.confidenceDropping ||
-    (memory.turn_count > 3 && trust.blockedActions.length > 0) ||
     (memory.signalsStable && repeatStrength !== 'none');
 
   if (repeatStrength !== 'none') {
-    if (isCriticalStep(decision.step_id)) {
+    if (decision.needs_confirmation || isCriticalStep(decision.step_id)) {
       return makeFollowUpDecision(
-        decision.step_id,
+        decision,
         state,
         memory,
         repeatStrength === 'strong'
           ? 'Immediate repeat converted into a follow-up check.'
-          : 'Repeated critical step converted into a follow-up check.',
-        decision.prompt_type ?? getPromptTypeForDecision(decision)
+          : 'Repeated high-priority action converted into a follow-up check.'
       );
+    }
+
+    if (urgentBleedingBypassActive && decision.selectedAction === 'control_bleeding') {
+      return {
+        ...decision,
+        reason: 'Urgent bypass kept bleeding control active despite repeated cycles.',
+      };
     }
 
     if (confirmationBias || memory.signalsStable) {
-      return makeReassessDecision(
+      return makeMonitoringDecision(
         'Confirm what you see before the next step.',
         'Repeated non-critical step with stable or less reliable signals.',
-        'low'
+        decision
       );
     }
 
-    return makeReassessDecision(
+    return makeMonitoringDecision(
       'Give me a quick update on their condition now.',
       'Repeated non-critical step converted into reassessment.',
-      'low'
+      decision
     );
   }
 
-  if (memory.turn_count > 3 && trust.blockedActions.length > 0) {
-    const promptType = getFallbackPromptType(state, trust);
-    if (promptType) {
-      return getConfirmationDecision(
-        promptType,
-        state,
-        'Turn limit reached while a field still needs confirmation.'
-      );
-    }
-  }
-
-  if (memory.signalsStable && !memory.signalsImproving && decision.step_id === 'reassess') {
-    return makeReassessDecision(
+  if (memory.signalsStable && !memory.signalsImproving && decision.selectedAction === 'monitoring') {
+    return makeMonitoringDecision(
       'Confirm if anything has changed right now.',
       'Signals remain stable across turns, so Stitch asks for a fresh check.',
-      'low'
+      decision
     );
   }
 
-  if (memory.confidenceDropping && !decision.needs_confirmation) {
-    return makeReassessDecision(
+  if (
+    memory.confidenceDropping &&
+    !decision.needs_confirmation &&
+    decision.selectedAction !== 'control_bleeding' &&
+    !urgentBleedingBypassActive
+  ) {
+    return makeMonitoringDecision(
       'Confirm what you see before acting.',
-      'Confidence dropped across turns, so confirmation is safer.',
-      'low'
+      'Confidence dropped across turns, so monitoring is safer.',
+      decision
     );
   }
 
@@ -663,7 +917,6 @@ const getEscalatedInstruction = (
 
 const applyEscalation = (
   decision: ProtocolDecision,
-  basePriority: ProtocolPriority,
   phase: CasePhase,
   previousPhase: CasePhase | null,
   memory: MemoryContext
@@ -671,10 +924,11 @@ const applyEscalation = (
   if (decision.step_id === 'confirm_state') {
     return {
       ...decision,
-      priority: clampPriority(decision.priority, basePriority),
+      priority: clampPriority(decision.priority, getBasePriorityForSelectedAction(decision.selectedAction)),
     };
   }
 
+  const basePriority = getBasePriorityForSelectedAction(decision.selectedAction);
   const escalationSteps = getEscalationSteps(phase, previousPhase, memory);
   const escalatedPriority = clampPriority(
     escalatePriority(basePriority, escalationSteps),
@@ -701,47 +955,49 @@ const decide = (
       'medium',
       'Point the camera at the casualty.',
       'No usable core signals are available because the casualty is not visible.',
-      false
+      false,
+      'aim_camera',
+      {
+        actionDebug: {
+          priorityOrder: ACTION_PRIORITY_ORDER,
+          skipped: [],
+        },
+      }
     );
   }
 
   const previousPhase = getPreviousPhase(memory);
-  const currentPhase = determinePhase(normalizedState, previousPhase);
+  const selectedDecision = selectAction(normalizedState, trust, memory);
+  const currentPhase = getPhaseForSelectedAction(selectedDecision.selectedAction);
   const phaseChanged =
     previousPhase !== null && currentPhase !== previousPhase;
-
-  const baseDecision = getBaseDecisionForPhase(currentPhase, normalizedState, memory);
-  const fieldAwareDecision = maybeConvertBlockedDecision(baseDecision, normalizedState, trust);
   const guardedDecision = applyMemoryGuardrails(
-    fieldAwareDecision,
+    selectedDecision,
     normalizedState,
     trust,
     memory,
     phaseChanged
   );
 
-  const narrowedDecision =
-    (guardedDecision.prompt_type ?? getPromptTypeForDecision(guardedDecision)) === null &&
-    trust.allowedActions.length === 0 &&
-    trust.blockedActions.length > 0
-      ? getConfirmationDecision(
-          getFallbackPromptType(normalizedState, trust) ?? 'confirm_breathing',
-          normalizedState,
-          trust.reason
-        )
-      : guardedDecision;
-
-  const cooldownAwareDecision = applyConfirmationCooldown(
-    narrowedDecision,
-    normalizedState,
-    trust,
-    memory
-  );
+  if (guardedDecision.urgent_bypass_activated !== true) {
+    guardedDecision.urgent_bypass_activated = false;
+    guardedDecision.urgent_bypass_reason =
+      guardedDecision.urgent_bypass_reason ??
+      getUrgentBypassReason(normalizedState, trust, memory);
+    guardedDecision.urgent_bypass_confidence =
+      guardedDecision.urgent_bypass_confidence ??
+      trust.fields.severe_bleeding.confidence;
+    guardedDecision.urgent_bypass_persistence_count =
+      guardedDecision.urgent_bypass_persistence_count ??
+      memory.severeBleedingConsecutiveTrueCount;
+    guardedDecision.urgent_bypass_contradiction_blocked =
+      guardedDecision.urgent_bypass_contradiction_blocked ??
+      memory.severeBleedingContradictionRecent;
+  }
 
   return applyEscalation(
-    cooldownAwareDecision,
-    baseDecision.priority,
-    currentPhase,
+    guardedDecision,
+    getPhaseForSelectedAction(guardedDecision.selectedAction),
     previousPhase,
     memory
   );

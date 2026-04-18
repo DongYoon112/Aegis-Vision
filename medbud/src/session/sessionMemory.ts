@@ -5,10 +5,18 @@ import {
   getPromptTypeForDecision,
 } from '../protocol/decisionMetadata';
 import type { TrustAssessment } from '../protocol/trustTypes';
-import type { MemoryContext, RecentSignals, SessionMemory, SignalSnapshot } from './types';
+import type {
+  BleedingObservation,
+  MemoryContext,
+  RecentSignals,
+  SessionMemory,
+  SignalSnapshot,
+} from './types';
 
 const RECENT_STEPS_LIMIT = 4;
 const SIGNAL_HISTORY_LIMIT = 2;
+const BLEEDING_OBSERVATION_LIMIT = 4;
+const HIGH_URGENCY_CONFIDENCE = 0.8;
 
 const SIGNAL_QUALITY_MULTIPLIER: Record<TrustAssessment['signal_quality'], number> = {
   high: 1,
@@ -83,6 +91,40 @@ const getProgressScore = (previous: RecentSignals, current: SignalSnapshot) => {
   return score;
 };
 
+const getBleedingObservation = (
+  state: MergedState,
+  trust: TrustAssessment
+): BleedingObservation => ({
+  value: state.severe_bleeding,
+  confidence: trust.fields.severe_bleeding.confidence,
+});
+
+const getSevereBleedingConsecutiveTrueCount = (
+  observations: BleedingObservation[]
+) => {
+  let count = 0;
+
+  for (let index = observations.length - 1; index >= 0; index -= 1) {
+    if (observations[index]?.value === true) {
+      count += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return count;
+};
+
+const hasRecentBleedingContradiction = (
+  observations: BleedingObservation[],
+  trust: TrustAssessment
+) =>
+  observations.some(
+    (observation) =>
+      observation.value === false && observation.confidence >= HIGH_URGENCY_CONFIDENCE
+  ) || trust.fields.severe_bleeding.reason.includes('disagree');
+
 export const createInitialSessionMemory = (): SessionMemory => ({
   last_step_id: null,
   last_instruction: null,
@@ -102,6 +144,10 @@ export const createInitialSessionMemory = (): SessionMemory => ({
     severe_bleeding: 0,
     responsiveness: 0,
   },
+  recentBleedingObservations: [],
+  severeBleedingConsecutiveTrueCount: 0,
+  severeBleedingContradictionRecent: false,
+  lastHighUrgencyAt: null,
 });
 
 export const buildMemoryContext = (
@@ -123,6 +169,33 @@ export const buildMemoryContext = (
     memory.last_confidence === null
       ? 0
       : effectiveConfidence - memory.last_confidence;
+  const bleedingObservation = getBleedingObservation(state, trust);
+  const recentBleedingObservations = [
+    ...memory.recentBleedingObservations,
+    bleedingObservation,
+  ].slice(-BLEEDING_OBSERVATION_LIMIT);
+  const severeBleedingConsecutiveTrueCount = getSevereBleedingConsecutiveTrueCount(
+    recentBleedingObservations
+  );
+  const severeBleedingContradictionRecent = hasRecentBleedingContradiction(
+    recentBleedingObservations,
+    trust
+  );
+  const urgentBypassEligible =
+    state.severe_bleeding === true &&
+    trust.fields.severe_bleeding.confidence >= HIGH_URGENCY_CONFIDENCE &&
+    severeBleedingConsecutiveTrueCount >= 2 &&
+    severeBleedingContradictionRecent === false;
+  const urgentBypassReason =
+    severeBleedingContradictionRecent
+      ? 'recent contradiction blocked bypass'
+      : state.severe_bleeding !== true
+        ? 'severe bleeding is not currently true'
+        : trust.fields.severe_bleeding.confidence < HIGH_URGENCY_CONFIDENCE
+          ? 'bleeding confidence below urgent threshold'
+          : severeBleedingConsecutiveTrueCount < 2
+            ? 'insufficient severe bleeding persistence'
+            : 'persistent high-confidence severe bleeding';
 
   return {
     last_step_id: memory.last_step_id,
@@ -141,6 +214,13 @@ export const buildMemoryContext = (
     confirmationCooldownActive: false,
     confirmationPromptSuppressed: false,
     suppressedPromptType: null,
+    recentBleedingObservations,
+    severeBleedingConsecutiveTrueCount,
+    severeBleedingContradictionRecent,
+    lastHighUrgencyAt: memory.lastHighUrgencyAt,
+    urgentBypassEligible,
+    urgentBypassReason,
+    urgentBypassConfidence: trust.fields.severe_bleeding.confidence,
   };
 };
 
@@ -162,6 +242,22 @@ export const applyDecisionToMemory = (
   const promptField =
     getFieldForAction(decision.step_id) ??
     getFieldForAction(getActionForPromptType(promptType) ?? '');
+  const recentBleedingObservations = [
+    ...memory.recentBleedingObservations,
+    getBleedingObservation(state, trust),
+  ].slice(-BLEEDING_OBSERVATION_LIMIT);
+  const severeBleedingConsecutiveTrueCount = getSevereBleedingConsecutiveTrueCount(
+    recentBleedingObservations
+  );
+  const severeBleedingContradictionRecent = hasRecentBleedingContradiction(
+    recentBleedingObservations,
+    trust
+  );
+  const lastHighUrgencyAt =
+    state.severe_bleeding === true &&
+    trust.fields.severe_bleeding.confidence >= HIGH_URGENCY_CONFIDENCE
+      ? Date.now()
+      : memory.lastHighUrgencyAt;
 
   return {
     last_step_id: decision.step_id,
@@ -179,5 +275,9 @@ export const applyDecisionToMemory = (
           [promptField]: trust.fields[promptField].confidence,
         }
       : { ...memory.lastFieldConfidences },
+    recentBleedingObservations,
+    severeBleedingConsecutiveTrueCount,
+    severeBleedingContradictionRecent,
+    lastHighUrgencyAt,
   };
 };

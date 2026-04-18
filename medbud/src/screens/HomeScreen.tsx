@@ -432,16 +432,25 @@ export function HomeScreen() {
           confirmation_prompt_suppressed:
             memoryContext?.confirmationPromptSuppressed ?? false,
           suppressed_prompt_type: memoryContext?.suppressedPromptType ?? null,
+          recentBleedingObservations: memoryContext?.recentBleedingObservations ?? [],
+          severeBleedingConsecutiveTrueCount:
+            memoryContext?.severeBleedingConsecutiveTrueCount ?? 0,
+          severeBleedingContradictionRecent:
+            memoryContext?.severeBleedingContradictionRecent ?? false,
+          lastHighUrgencyAt: sessionMemory.lastHighUrgencyAt,
+          urgentBypassEligible: memoryContext?.urgentBypassEligible ?? false,
+          urgentBypassReason: memoryContext?.urgentBypassReason ?? '',
+          urgentBypassConfidence: memoryContext?.urgentBypassConfidence ?? 0,
           stability_bias: memoryContext?.signalsStable ?? false,
           confidence_delta: memoryContext?.confidenceDelta ?? 0,
           signals_improving: memoryContext?.signalsImproving ?? false,
         })}
-        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "lastPromptType": null,\n  "lastPromptAt": null,\n  "cooldown_active": false,\n  "confirmation_prompt_suppressed": false,\n  "suppressed_prompt_type": null,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
+        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "lastPromptType": null,\n  "lastPromptAt": null,\n  "cooldown_active": false,\n  "confirmation_prompt_suppressed": false,\n  "suppressed_prompt_type": null,\n  "recentBleedingObservations": [],\n  "severeBleedingConsecutiveTrueCount": 0,\n  "severeBleedingContradictionRecent": false,\n  "lastHighUrgencyAt": null,\n  "urgentBypassEligible": false,\n  "urgentBypassReason": "",\n  "urgentBypassConfidence": 0,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
       />
       <JsonCard
         title="Protocol Decision"
         json={stringifyValue(protocolDecision)}
-        placeholder='{\n  "step_id": "",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false,\n  "prompt_type": null,\n  "cooldown_suppressed": false\n}'
+        placeholder='{\n  "step_id": "",\n  "selectedAction": "monitoring",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false,\n  "consideredActions": [],\n  "cooldown_affected": false,\n  "actionDebug": {\n    "priorityOrder": [\n      "control_bleeding",\n      "airway_or_breathing_support",\n      "check_responsiveness",\n      "confirm_breathing",\n      "confirm_responsiveness",\n      "monitoring"\n    ],\n    "skipped": []\n  },\n  "urgent_bypass_activated": false,\n  "urgent_bypass_reason": "",\n  "urgent_bypass_confidence": 0,\n  "urgent_bypass_persistence_count": 0,\n  "urgent_bypass_contradiction_blocked": false,\n  "prompt_type": null,\n  "cooldown_suppressed": false\n}'
       />
       <ResponseCard response={spokenResponse} />
       <ErrorCard error={errorMessage} />

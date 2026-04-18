@@ -10,6 +10,11 @@ export type RecentSignals = {
 
 export type SignalSnapshot = RecentSignals;
 
+export type BleedingObservation = {
+  value: NullableBoolean;
+  confidence: number;
+};
+
 export type SessionMemory = {
   last_step_id: string | null;
   last_instruction: string | null;
@@ -21,6 +26,10 @@ export type SessionMemory = {
   lastPromptType: PromptType | null;
   lastPromptAt: number | null;
   lastFieldConfidences: Record<TrustFieldName, number>;
+  recentBleedingObservations: BleedingObservation[];
+  severeBleedingConsecutiveTrueCount: number;
+  severeBleedingContradictionRecent: boolean;
+  lastHighUrgencyAt: number | null;
 };
 
 export type CooldownStrength = 'none' | 'weak' | 'strong';
@@ -42,4 +51,11 @@ export type MemoryContext = {
   confirmationCooldownActive: boolean;
   confirmationPromptSuppressed: boolean;
   suppressedPromptType: PromptType | null;
+  recentBleedingObservations: BleedingObservation[];
+  severeBleedingConsecutiveTrueCount: number;
+  severeBleedingContradictionRecent: boolean;
+  lastHighUrgencyAt: number | null;
+  urgentBypassEligible: boolean;
+  urgentBypassReason: string;
+  urgentBypassConfidence: number;
 };

@@ -62,12 +62,50 @@ export type CasePhase =
 
 export type ProtocolPriority = 'low' | 'medium' | 'high' | 'critical';
 
+export type ProtocolSelectedAction =
+  | 'control_bleeding'
+  | 'airway_or_breathing_support'
+  | 'check_responsiveness'
+  | 'confirm_breathing'
+  | 'confirm_responsiveness'
+  | 'monitoring'
+  | 'aim_camera';
+
+export type ActionSkipReason =
+  | 'not_allowed'
+  | 'field_does_not_need_confirmation'
+  | 'cooldown'
+  | 'severe_bleeding_override'
+  | 'lower_priority_than_selected'
+  | 'urgent_bypass_triggered'
+  | 'insufficient_persistence'
+  | 'confidence_below_urgent_threshold'
+  | 'recent_contradiction'
+  | 'control_bleeding_not_allowed';
+
+export type ProtocolActionDebug = {
+  priorityOrder: ProtocolSelectedAction[];
+  skipped: Array<{
+    action: ProtocolSelectedAction;
+    reason: ActionSkipReason;
+  }>;
+};
+
 export type ProtocolDecision = {
   step_id: string;
   priority: ProtocolPriority;
   instruction: string;
   reason: string;
   needs_confirmation: boolean;
+  selectedAction: ProtocolSelectedAction;
+  consideredActions?: ProtocolSelectedAction[];
+  cooldown_affected?: boolean;
+  actionDebug?: ProtocolActionDebug;
+  urgent_bypass_activated?: boolean;
+  urgent_bypass_reason?: string;
+  urgent_bypass_confidence?: number;
+  urgent_bypass_persistence_count?: number;
+  urgent_bypass_contradiction_blocked?: boolean;
   prompt_type?: PromptType | null;
   cooldown_suppressed?: boolean;
 };
