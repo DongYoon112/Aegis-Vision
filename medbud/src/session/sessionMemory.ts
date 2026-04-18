@@ -6,6 +6,7 @@ import {
 } from '../protocol/decisionMetadata';
 import type { TrustAssessment } from '../protocol/trustTypes';
 import type {
+  BreathingConfirmation,
   BleedingObservation,
   FieldObservation,
   MemoryContext,
@@ -21,6 +22,17 @@ const BLEEDING_OBSERVATION_LIMIT = 4;
 const RECOVERY_OBSERVATION_LIMIT = 3;
 const HIGH_URGENCY_CONFIDENCE = 0.8;
 const RECOVERY_CONFIDENCE_THRESHOLD = 0.6;
+const BREATHING_CONFIRMATION_TTL_MS = 12000;
+const BREATHING_CONFIRMATION_LOCKOUT_MS = 8000;
+const EXPLICIT_NOT_BREATHING_PATTERNS = [
+  'not breathing',
+  'no breathing',
+  'they are not breathing',
+  'he is not breathing',
+  'she is not breathing',
+  'chest is not rising',
+  'no chest movement',
+];
 
 const SIGNAL_QUALITY_MULTIPLIER: Record<TrustAssessment['signal_quality'], number> = {
   high: 1,
@@ -213,6 +225,116 @@ const getNextFieldRecoveryState = (
   ),
 });
 
+const normalizeTranscript = (transcript: string) =>
+  transcript.toLowerCase().replace(/\s+/g, ' ').trim();
+
+const isFreshBreathingConfirmation = (
+  confirmation: BreathingConfirmation | null,
+  now: number
+) => confirmation !== null && confirmation.expiresAt > now;
+
+const detectBreathingConfirmation = (
+  memory: SessionMemory,
+  transcript: string,
+  now: number
+): BreathingConfirmation | null => {
+  if (
+    memory.lastPromptType !== 'confirm_breathing' ||
+    memory.lastPromptAt === null ||
+    now - memory.lastPromptAt > BREATHING_CONFIRMATION_TTL_MS
+  ) {
+    return null;
+  }
+
+  const normalizedTranscript = normalizeTranscript(transcript);
+  if (
+    !normalizedTranscript ||
+    !EXPLICIT_NOT_BREATHING_PATTERNS.some((pattern) =>
+      normalizedTranscript.includes(pattern)
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    value: false,
+    source: 'user_confirmation',
+    confirmedAt: now,
+    expiresAt: now + BREATHING_CONFIRMATION_TTL_MS,
+    transcript,
+    applied: true,
+  };
+};
+
+export const resolveMergedStateWithBreathingConfirmation = (
+  memory: SessionMemory,
+  transcript: string,
+  state: MergedState
+) => {
+  const now = Date.now();
+  const detectedConfirmation = detectBreathingConfirmation(memory, transcript, now);
+  const existingConfirmation = isFreshBreathingConfirmation(
+    memory.breathingConfirmation,
+    now
+  )
+    ? memory.breathingConfirmation
+    : null;
+  const breathingConfirmation = detectedConfirmation ?? existingConfirmation;
+  const breathingConfirmationFresh = isFreshBreathingConfirmation(
+    breathingConfirmation,
+    now
+  );
+  const breathingConfirmationApplied =
+    breathingConfirmationFresh && breathingConfirmation?.value === false;
+  const nextMemory: SessionMemory = {
+    ...memory,
+    breathingConfirmation,
+    breathingConfirmationLockoutUntil:
+      breathingConfirmationFresh && breathingConfirmation !== null
+      ? breathingConfirmation.confirmedAt + BREATHING_CONFIRMATION_LOCKOUT_MS
+      : memory.breathingConfirmationLockoutUntil,
+    breathingConfirmationSuppressedReason: breathingConfirmationApplied
+      ? 'Fresh user-confirmed not breathing answer applied.'
+      : null,
+  };
+
+  if (!breathingConfirmationApplied || breathingConfirmation === null) {
+    return {
+      state: {
+        ...state,
+        breathing_confirmation_value: null,
+        breathing_confirmation_source: null,
+        breathing_confirmation_fresh: false,
+      },
+      memory: {
+        ...nextMemory,
+        breathingConfirmation: breathingConfirmationFresh ? breathingConfirmation : null,
+        breathingConfirmationLockoutUntil: breathingConfirmationFresh
+          ? nextMemory.breathingConfirmationLockoutUntil
+          : null,
+        breathingConfirmationSuppressedReason: null,
+      },
+    };
+  }
+
+  const nextNotes = state.notes.includes('user_confirmed_not_breathing')
+    ? state.notes
+    : [...state.notes, 'user_confirmed_not_breathing'];
+
+  return {
+    state: {
+      ...state,
+      breathing: breathingConfirmation.value,
+      confidence: clampConfidence(Math.max(state.confidence, 0.92), 0),
+      notes: nextNotes,
+      breathing_confirmation_value: breathingConfirmation.value,
+      breathing_confirmation_source: breathingConfirmation.source,
+      breathing_confirmation_fresh: true,
+    },
+    memory: nextMemory,
+  };
+};
+
 export const createInitialSessionMemory = (): SessionMemory => ({
   last_step_id: null,
   last_instruction: null,
@@ -236,6 +358,9 @@ export const createInitialSessionMemory = (): SessionMemory => ({
   severeBleedingConsecutiveTrueCount: 0,
   severeBleedingContradictionRecent: false,
   lastHighUrgencyAt: null,
+  breathingConfirmation: null,
+  breathingConfirmationLockoutUntil: null,
+  breathingConfirmationSuppressedReason: null,
   fieldRecovery: {
     breathing: createInitialRecoveryFieldState(),
     responsiveness: createInitialRecoveryFieldState(),
@@ -289,6 +414,11 @@ export const buildMemoryContext = (
             ? 'insufficient severe bleeding persistence'
             : 'persistent high-confidence severe bleeding';
   const fieldRecovery = getNextFieldRecoveryState(memory, state, trust);
+  const now = Date.now();
+  const breathingConfirmationFresh = isFreshBreathingConfirmation(
+    memory.breathingConfirmation,
+    now
+  );
 
   return {
     last_step_id: memory.last_step_id,
@@ -314,6 +444,18 @@ export const buildMemoryContext = (
     urgentBypassEligible,
     urgentBypassReason,
     urgentBypassConfidence: trust.fields.severe_bleeding.confidence,
+    breathingConfirmation: breathingConfirmationFresh
+      ? memory.breathingConfirmation
+      : null,
+    breathingConfirmationFresh,
+    breathingConfirmationApplied:
+      breathingConfirmationFresh &&
+      memory.breathingConfirmation?.applied === true,
+    breathingConfirmationLockoutUntil: breathingConfirmationFresh
+      ? memory.breathingConfirmationLockoutUntil
+      : null,
+    breathingConfirmationSuppressedReason:
+      memory.breathingConfirmationSuppressedReason,
     breathingStableCycleCount: fieldRecovery.breathing.stableCycleCount,
     responsivenessStableCycleCount: fieldRecovery.responsiveness.stableCycleCount,
     breathingRecovered:
@@ -369,6 +511,24 @@ export const applyDecisionToMemory = (
       ? Date.now()
       : memory.lastHighUrgencyAt;
   const fieldRecovery = getNextFieldRecoveryState(memory, state, trust);
+  const now = Date.now();
+  const breathingConfirmation = isFreshBreathingConfirmation(
+    memory.breathingConfirmation,
+    now
+  )
+    ? memory.breathingConfirmation !== null
+      ? {
+        value: memory.breathingConfirmation.value,
+        source: memory.breathingConfirmation.source,
+        confirmedAt: memory.breathingConfirmation.confirmedAt,
+        expiresAt: memory.breathingConfirmation.expiresAt,
+        transcript: memory.breathingConfirmation.transcript,
+        applied:
+          state.breathing_confirmation_fresh === true &&
+          state.breathing_confirmation_source === 'user_confirmation',
+      }
+      : null
+    : null;
 
   return {
     last_step_id: decision.step_id,
@@ -390,6 +550,13 @@ export const applyDecisionToMemory = (
     severeBleedingConsecutiveTrueCount,
     severeBleedingContradictionRecent,
     lastHighUrgencyAt,
+    breathingConfirmation,
+    breathingConfirmationLockoutUntil:
+      breathingConfirmation !== null
+        ? memory.breathingConfirmationLockoutUntil
+        : null,
+    breathingConfirmationSuppressedReason:
+      memory.breathingConfirmationSuppressedReason,
     fieldRecovery,
   };
 };

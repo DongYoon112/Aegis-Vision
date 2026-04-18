@@ -455,6 +455,12 @@ const isPromptRecovered = (
     ? memory.breathingRecovered
     : memory.responsivenessRecovered;
 
+const isBreathingConfirmationAlreadyAnswered = (memory: MemoryContext) =>
+  memory.breathingConfirmationFresh &&
+  memory.breathingConfirmation?.source === 'user_confirmation' &&
+  memory.breathingConfirmationLockoutUntil !== null &&
+  Date.now() < memory.breathingConfirmationLockoutUntil;
+
 const isConfirmationSuppressedByAntiRepeat = (
   promptType: PromptType,
   state: MergedState,
@@ -598,6 +604,8 @@ const selectAction = (
   let antiRepeatSuppressed = false;
   let antiRepeatSuppressedPromptType: PromptType | null = null;
   let antiRepeatReason: string | undefined;
+  let breathingConfirmationSuppressed = false;
+  let breathingConfirmationSuppressionReason: string | undefined;
   const confirmationRecoveryActivated =
     memory.breathingConfirmationRecentlyCleared ||
     memory.responsivenessConfirmationRecentlyCleared;
@@ -616,6 +624,9 @@ const selectAction = (
     anti_repeat_suppressed: antiRepeatSuppressed,
     anti_repeat_reason: antiRepeatReason,
     anti_repeat_suppressed_prompt_type: antiRepeatSuppressedPromptType,
+    breathing_confirmation_suppressed: breathingConfirmationSuppressed,
+    breathing_confirmation_suppression_reason:
+      breathingConfirmationSuppressionReason,
   });
 
   for (const action of ACTION_PRIORITY_ORDER) {
@@ -699,6 +710,22 @@ const selectAction = (
         addSkippedAction(actionDebug.skipped, action, 'not_allowed');
         break;
       case 'confirm_breathing':
+        if (isBreathingConfirmationAlreadyAnswered(memory)) {
+          addSkippedAction(
+            actionDebug.skipped,
+            action,
+            'user_already_confirmed_breathing'
+          );
+          breathingConfirmationSuppressed = true;
+          breathingConfirmationSuppressionReason =
+            'Fresh user-confirmed breathing answer suppressed a repeated breathing confirmation.';
+          antiRepeatSuppressed = true;
+          antiRepeatSuppressedPromptType = 'confirm_breathing';
+          antiRepeatReason =
+            'Breathing confirmation was already answered by the user.';
+          break;
+        }
+
         if (memory.breathingRecovered) {
           addSkippedAction(
             actionDebug.skipped,
@@ -1171,6 +1198,10 @@ const decide = (
     guardedDecision.anti_repeat_reason ?? undefined;
   guardedDecision.anti_repeat_suppressed_prompt_type =
     guardedDecision.anti_repeat_suppressed_prompt_type ?? null;
+  guardedDecision.breathing_confirmation_suppressed =
+    guardedDecision.breathing_confirmation_suppressed ?? false;
+  guardedDecision.breathing_confirmation_suppression_reason =
+    guardedDecision.breathing_confirmation_suppression_reason ?? undefined;
 
   return applyEscalation(
     guardedDecision,

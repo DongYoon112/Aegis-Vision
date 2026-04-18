@@ -25,6 +25,19 @@ export const medbudEnv = {
       normalize(process.env.EXPO_PUBLIC_ELEVENLABS_TTS_MODEL_ID) ||
       'eleven_multilingual_v2',
   },
+  metaWearables: {
+    appId: normalize(process.env.META_WEARABLES_APP_ID),
+    clientToken: normalize(process.env.META_WEARABLES_CLIENT_TOKEN),
+    datVersion: normalize(process.env.META_WEARABLES_DAT_VERSION) || '0.6.0',
+    analyticsOptOut: parseBoolean(
+      process.env.META_WEARABLES_ANALYTICS_OPT_OUT,
+      false
+    ),
+    enableMockDevice: parseBoolean(
+      process.env.META_WEARABLES_ENABLE_MOCK_DEVICE,
+      false
+    ),
+  },
 };
 
 const requiredLiveConfig = [

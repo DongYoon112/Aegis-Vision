@@ -6,10 +6,34 @@ export type InputChannel = 'video' | 'audio';
 
 export type InputConnectionState =
   | 'unavailable'
+  | 'sdk_missing'
+  | 'repo_not_configured'
+  | 'app_id_missing'
+  | 'developer_mode_required'
+  | 'device_not_authorized'
   | 'disconnected'
   | 'connecting'
   | 'connected'
+  | 'streaming_video'
+  | 'streaming_audio'
+  | 'partial_capability'
+  | 'fallback_active'
   | 'failed';
+
+export type MetaAuthorizationStatus =
+  | 'unknown'
+  | 'not_required'
+  | 'pending'
+  | 'authorized'
+  | 'denied';
+
+export type MetaRuntimeOrigin = 'real_hardware' | 'mock_device' | 'stub' | 'none';
+
+export type MetaCapabilities = {
+  video: boolean;
+  audio: boolean;
+  playback: boolean;
+};
 
 export type InputChannelStatus = {
   available: boolean;
@@ -26,6 +50,18 @@ export type InputSourceStatus = {
   audio: InputChannelStatus;
   lastFrameAt: string | null;
   lastAudioAt: string | null;
+  sdkPresent?: boolean;
+  repoConfigured?: boolean;
+  applicationIdConfigured?: boolean;
+  platformSupported?: boolean;
+  authorizationStatus?: MetaAuthorizationStatus;
+  capabilities?: MetaCapabilities;
+  nativeConnectionState?: InputConnectionState;
+  runtimeOrigin?: MetaRuntimeOrigin;
+  lastNativeError?: string | null;
+  lastConnectionAttemptAt?: string | null;
+  isRealHardware?: boolean;
+  mockDeviceEnabled?: boolean;
 };
 
 export type SourceAvailabilityMap = {
@@ -41,6 +77,7 @@ export type SourceAvailabilityMap = {
 
 export type SourceSelectionMode =
   | 'mock'
+  | 'meta_full'
   | 'meta_video_phone_audio'
   | 'phone_only';
 
@@ -60,6 +97,12 @@ export type SourceManagerStatus = {
     meta: InputSourceStatus;
     phone: InputSourceStatus;
     mock?: InputSourceStatus;
+  };
+  hardwareValidation: {
+    metaActiveForVideo: boolean;
+    metaActiveForAudio: boolean;
+    latestFrameOrigin: CameraFrame['source'] | null;
+    latestAudioOrigin: InputSourceKind | null;
   };
   statusLabel: string;
   reason?: string;

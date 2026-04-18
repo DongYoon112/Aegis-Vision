@@ -1,0 +1,12 @@
+{
+  "name": "meta-wearables-bridge",
+  "version": "0.1.0",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true,
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}

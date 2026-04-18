@@ -4,7 +4,9 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
+    "prebuild:android": "expo prebuild --platform android",
     "android": "expo start --android",
+    "run:android": "expo run:android",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit"
@@ -14,7 +16,9 @@
     "expo-audio": "~1.0.14",
     "expo-camera": "~17.0.10",
     "expo-file-system": "~19.0.17",
+    "expo-modules-core": "~3.0.19",
     "expo-speech": "~13.0.1",
+    "meta-wearables-bridge": "file:./modules/meta-wearables-bridge",
     "expo-status-bar": "~3.0.8",
     "react": "19.1.0",
     "react-native": "0.81.4"

@@ -1,6 +1,6 @@
 import type { CameraFrame } from '../../protocol/types';
-import { glassesAudio } from '../glassesAudio';
-import { metaWearablesBridge } from '../metaWearablesBridge';
+import type { RecordedAudio } from '../../types/session';
+import { metaWearablesBridge, type MetaWearablesStatus } from '../metaWearablesBridge';
 import type {
   InputChannel,
   InputConnectionState,
@@ -10,42 +10,75 @@ import type {
 
 const SAMPLE_INTERVAL_MS = 1500;
 
-const timeout = (ms: number) =>
-  new Promise<boolean>((resolve) => {
-    setTimeout(() => resolve(false), ms);
-  });
-
 class MetaWearablesSource implements InputSource {
   readonly kind = 'meta_glasses' as const;
 
-  private videoAvailable = false;
-  private audioAvailable = false;
-  private videoActive = false;
   private latestFrame: CameraFrame | null = null;
-  private pollingInterval: ReturnType<typeof setInterval> | null = null;
-  private videoConnectionState: InputConnectionState = 'unavailable';
-  private audioConnectionState: InputConnectionState = 'unavailable';
-  private reason = 'Meta wearables bridge unavailable';
+
+  private latestAudio: RecordedAudio | null = null;
+
+  private latestStatus: MetaWearablesStatus = {
+    sdkPresent: false,
+    repoConfigured: false,
+    applicationIdConfigured: false,
+    platformSupported: false,
+    availability: false,
+    authorizationStatus: 'unknown',
+    connectionState: 'sdk_missing',
+    capabilities: {
+      video: false,
+      audio: false,
+      playback: false,
+    },
+    runtimeOrigin: 'stub',
+    mockDeviceEnabled: false,
+    lastError: 'Meta native module is not installed in this build.',
+    lastConnectionAttemptAt: null,
+    lastFrameAt: null,
+    lastAudioAt: null,
+  };
+
+  private videoActive = false;
+
+  private audioActive = false;
+
+  private subscriptions: Array<{ remove(): void }> = [];
+
+  private syncFromStatus(status: MetaWearablesStatus) {
+    this.latestStatus = status;
+  }
 
   async initialize() {
     await metaWearablesBridge.initialize();
-    this.videoAvailable = await metaWearablesBridge.isAvailable();
-    this.audioAvailable = await glassesAudio.isMicrophoneAvailable();
-    const bridgeState = await metaWearablesBridge.getConnectionState();
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
 
-    this.videoConnectionState = this.videoAvailable
-      ? bridgeState
-      : 'unavailable';
-    this.audioConnectionState = this.audioAvailable
-      ? this.videoConnectionState
-      : 'unavailable';
-    this.reason = this.videoAvailable
-      ? 'Meta glasses available'
-      : 'Meta wearables bridge unavailable';
+    if (this.subscriptions.length === 0) {
+      this.subscriptions.push(
+        metaWearablesBridge.addListener('statusChanged', (status) => {
+          this.syncFromStatus(status);
+        }),
+        metaWearablesBridge.addListener('frameReceived', (frame) => {
+          this.latestFrame = {
+            ...frame,
+            source: 'meta_glasses',
+          };
+        }),
+        metaWearablesBridge.addListener('audioReceived', (audio) => {
+          this.latestAudio = audio;
+        }),
+        metaWearablesBridge.addListener('error', (payload) => {
+          this.latestStatus = {
+            ...this.latestStatus,
+            lastError: payload.message,
+            connectionState: 'failed',
+          };
+        })
+      );
+    }
   }
 
   isAvailable() {
-    return this.videoAvailable || this.audioAvailable;
+    return this.latestStatus.availability;
   }
 
   async requestPermissions(_channels: InputChannel[] = ['video', 'audio']) {
@@ -53,58 +86,38 @@ class MetaWearablesSource implements InputSource {
   }
 
   async connect() {
-    if (!this.videoAvailable) {
-      this.videoConnectionState = 'unavailable';
-      this.audioConnectionState = this.audioAvailable ? 'disconnected' : 'unavailable';
-      this.reason = 'Meta wearables bridge unavailable';
-      throw new Error(this.reason);
+    const connected = await metaWearablesBridge.connectToGlasses();
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
+
+    if (!connected || this.latestStatus.connectionState === 'device_not_authorized') {
+      throw new Error(
+        this.latestStatus.lastError ??
+          (this.latestStatus.connectionState === 'device_not_authorized'
+            ? 'Meta device authorization is still pending.'
+            : 'Meta glasses connection failed.')
+      );
     }
-
-    this.videoConnectionState = 'connecting';
-    this.audioConnectionState = this.audioAvailable ? 'connecting' : 'unavailable';
-
-    const connected = await Promise.race([
-      metaWearablesBridge.connectToGlasses(),
-      timeout(2000),
-    ]);
-
-    this.videoAvailable = await metaWearablesBridge.isAvailable();
-    this.audioAvailable = await glassesAudio.isMicrophoneAvailable();
-
-    if (!connected) {
-      this.videoConnectionState = 'failed';
-      this.audioConnectionState = this.audioAvailable ? 'failed' : 'unavailable';
-      this.reason = 'Meta glasses connection failed';
-      throw new Error(this.reason);
-    }
-
-    const bridgeState = await metaWearablesBridge.getConnectionState();
-    const normalizedState = bridgeState;
-
-    if (normalizedState !== 'connected') {
-      this.videoConnectionState = normalizedState;
-      this.audioConnectionState = this.audioAvailable ? normalizedState : 'unavailable';
-      this.reason = 'Meta glasses did not report a connected state';
-      throw new Error(this.reason);
-    }
-
-    this.videoConnectionState = 'connected';
-    this.audioConnectionState = this.audioAvailable ? 'connected' : 'unavailable';
-    this.reason = this.audioAvailable
-      ? 'Meta glasses connected'
-      : 'Meta glasses connected for video only';
   }
 
   async disconnect() {
     await metaWearablesBridge.disconnectFromGlasses();
-    this.videoConnectionState = this.videoAvailable ? 'disconnected' : 'unavailable';
-    this.audioConnectionState = this.audioAvailable ? 'disconnected' : 'unavailable';
     this.videoActive = false;
-    await this.stopVideoCapture();
-    this.reason = 'Meta glasses disconnected';
+    this.audioActive = false;
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
   }
 
-  private async pollLatestFrame() {
+  async startVideoCapture() {
+    if (
+      !this.latestStatus.capabilities.video ||
+      (this.latestStatus.connectionState !== 'connected' &&
+        this.latestStatus.connectionState !== 'streaming_video')
+    ) {
+      return;
+    }
+
+    this.videoActive = true;
+    await metaWearablesBridge.startVideoCapture(SAMPLE_INTERVAL_MS);
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
     const frame = await metaWearablesBridge.getLatestFrame();
     if (frame) {
       this.latestFrame = {
@@ -112,44 +125,37 @@ class MetaWearablesSource implements InputSource {
         source: 'meta_glasses',
       };
     }
-
-    const bridgeState = await metaWearablesBridge.getConnectionState();
-    this.videoConnectionState = this.videoAvailable ? bridgeState : 'unavailable';
-    if (this.videoConnectionState !== 'connected') {
-      this.reason = 'Meta glasses unavailable';
-    }
-  }
-
-  async startVideoCapture() {
-    if (this.pollingInterval || this.videoConnectionState !== 'connected') {
-      return;
-    }
-
-    this.videoActive = true;
-    await metaWearablesBridge.startCameraSampling(SAMPLE_INTERVAL_MS);
-    void this.pollLatestFrame();
-    this.pollingInterval = setInterval(() => {
-      void this.pollLatestFrame();
-    }, SAMPLE_INTERVAL_MS);
   }
 
   async stopVideoCapture() {
     this.videoActive = false;
-
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
-      this.pollingInterval = null;
-    }
-
-    await metaWearablesBridge.stopCameraSampling();
+    await metaWearablesBridge.stopVideoCapture();
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
   }
 
   async startAudioCapture() {
-    return;
+    if (
+      !this.latestStatus.capabilities.audio ||
+      (this.latestStatus.connectionState !== 'connected' &&
+        this.latestStatus.connectionState !== 'streaming_audio')
+    ) {
+      return;
+    }
+
+    this.audioActive = true;
+    await metaWearablesBridge.startAudioCapture();
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
   }
 
   async stopAudioCapture() {
-    return null;
+    this.audioActive = false;
+    await metaWearablesBridge.stopAudioCapture();
+    this.syncFromStatus(await metaWearablesBridge.getStatus());
+    const audio = await metaWearablesBridge.getLatestAudio();
+    if (audio) {
+      this.latestAudio = audio;
+    }
+    return this.latestAudio;
   }
 
   getLatestFrame() {
@@ -157,32 +163,115 @@ class MetaWearablesSource implements InputSource {
   }
 
   getLatestAudio() {
-    return null;
+    return this.latestAudio;
+  }
+
+  private getChannelState(
+    capabilityAvailable: boolean,
+    isActive: boolean,
+    streamingState: InputConnectionState
+  ): InputConnectionState {
+    if (!this.latestStatus.sdkPresent) {
+      return 'sdk_missing';
+    }
+
+    if (!this.latestStatus.repoConfigured) {
+      return 'repo_not_configured';
+    }
+
+    if (!this.latestStatus.applicationIdConfigured) {
+      return 'app_id_missing';
+    }
+
+    if (!this.latestStatus.platformSupported || !capabilityAvailable) {
+      return 'unavailable';
+    }
+
+    if (this.latestStatus.connectionState === 'developer_mode_required') {
+      return 'developer_mode_required';
+    }
+
+    if (this.latestStatus.authorizationStatus === 'pending') {
+      return 'device_not_authorized';
+    }
+
+    if (isActive && this.latestStatus.connectionState === streamingState) {
+      return streamingState;
+    }
+
+    return this.latestStatus.connectionState;
   }
 
   getStatus(): InputSourceStatus {
+    let statusLabel = 'Meta native SDK missing';
+    if (this.latestStatus.sdkPresent) {
+      if (this.latestStatus.connectionState === 'repo_not_configured') {
+        statusLabel = 'Meta DAT GitHub Packages auth missing';
+      } else if (this.latestStatus.connectionState === 'app_id_missing') {
+        statusLabel = 'Meta DAT app ID missing';
+      } else if (this.latestStatus.connectionState === 'developer_mode_required') {
+        statusLabel = 'Meta Developer Mode required';
+      } else if (this.latestStatus.connectionState === 'device_not_authorized') {
+        statusLabel = 'Meta authorization required';
+      } else if (
+        this.latestStatus.connectionState === 'connected' ||
+        this.latestStatus.connectionState === 'streaming_video' ||
+        this.latestStatus.connectionState === 'streaming_audio'
+      ) {
+        statusLabel = 'Meta glasses connected';
+      } else {
+        statusLabel = 'Meta glasses available';
+      }
+    }
+
     return {
       kind: 'meta_glasses',
-      statusLabel: this.reason,
-      reason: this.reason,
+      statusLabel,
+      reason: this.latestStatus.lastError ?? undefined,
       video: {
-        available: this.videoAvailable,
+        available: this.latestStatus.capabilities.video && this.latestStatus.availability,
         active: this.videoActive,
-        connectionState: this.videoConnectionState,
-        reason: this.videoAvailable
-          ? this.reason
-          : 'Meta wearables bridge unavailable',
+        connectionState: this.getChannelState(
+          this.latestStatus.capabilities.video,
+          this.videoActive,
+          'streaming_video'
+        ),
+        reason:
+          this.latestStatus.authorizationStatus === 'pending'
+            ? 'Meta device authorization is pending.'
+            : this.latestStatus.capabilities.video
+              ? this.latestStatus.lastError ?? undefined
+              : 'Meta video capability is unavailable in this build.',
       },
       audio: {
-        available: this.audioAvailable,
-        active: false,
-        connectionState: this.audioConnectionState,
-        reason: this.audioAvailable
-          ? 'Meta glasses microphone available'
-          : 'Meta glasses microphone unavailable',
+        available: this.latestStatus.capabilities.audio && this.latestStatus.availability,
+        active: this.audioActive,
+        connectionState: this.getChannelState(
+          this.latestStatus.capabilities.audio,
+          this.audioActive,
+          'streaming_audio'
+        ),
+        reason:
+          this.latestStatus.authorizationStatus === 'pending'
+            ? 'Meta device authorization is pending.'
+            : this.latestStatus.capabilities.audio
+              ? this.latestStatus.lastError ?? undefined
+              : 'Meta audio capability is unavailable in this build.',
       },
-      lastFrameAt: this.latestFrame?.capturedAt ?? null,
-      lastAudioAt: null,
+      lastFrameAt: this.latestFrame?.capturedAt ?? this.latestStatus.lastFrameAt,
+      lastAudioAt: this.latestStatus.lastAudioAt,
+      sdkPresent: this.latestStatus.sdkPresent,
+      repoConfigured: this.latestStatus.repoConfigured,
+      applicationIdConfigured: this.latestStatus.applicationIdConfigured,
+      platformSupported: this.latestStatus.platformSupported,
+      authorizationStatus: this.latestStatus.authorizationStatus,
+      capabilities: this.latestStatus.capabilities,
+      nativeConnectionState: this.latestStatus.connectionState,
+      runtimeOrigin: this.latestStatus.runtimeOrigin,
+      lastNativeError: this.latestStatus.lastError,
+      lastConnectionAttemptAt: this.latestStatus.lastConnectionAttemptAt,
+      isRealHardware: this.latestStatus.runtimeOrigin === 'real_hardware',
+      mockDeviceEnabled: this.latestStatus.mockDeviceEnabled,
     };
   }
 }

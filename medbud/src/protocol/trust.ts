@@ -64,6 +64,16 @@ const getFieldReason = (
   confidence: number,
   state: MergedState
 ) => {
+  if (
+    field === 'breathing' &&
+    state.breathing_confirmation_fresh === true &&
+    state.breathing_confirmation_source === 'user_confirmation'
+  ) {
+    return mergedValue === false
+      ? 'user_confirmed_not_breathing'
+      : 'user_confirmed_breathing';
+  }
+
   if (mergedValue === null) {
     return `${field} is unknown`;
   }
@@ -93,6 +103,22 @@ const evaluateFieldTrust = (
   parserValue: NullableBoolean,
   state: MergedState
 ): TrustFieldAssessment => {
+  if (
+    field === 'breathing' &&
+    state.breathing_confirmation_fresh === true &&
+    state.breathing_confirmation_source === 'user_confirmation' &&
+    mergedValue !== null
+  ) {
+    return {
+      needsConfirmation: false,
+      confidence: 0.96,
+      reason:
+        mergedValue === false
+          ? 'user_confirmed_not_breathing'
+          : 'user_confirmed_breathing',
+    };
+  }
+
   let confidence = state.confidence;
 
   if (mergedValue === null) {

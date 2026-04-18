@@ -3,7 +3,8 @@ import { metaWearablesBridge } from './metaWearablesBridge';
 
 export const metaGlasses = {
   async isAvailable() {
-    return metaWearablesBridge.isAvailable();
+    const status = await metaWearablesBridge.getStatus();
+    return status.availability;
   },
 
   async isPlaybackAvailable() {

@@ -1,0 +1,52 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+  id 'org.jetbrains.kotlin.android'
+}
+
+group = 'com.aegisvision'
+version = '0.1.0'
+
+def metaWearablesLocalProperties = new Properties()
+def metaWearablesLocalPropertiesFile = new File(rootProject.projectDir, "local.properties")
+if (metaWearablesLocalPropertiesFile.exists()) {
+  metaWearablesLocalPropertiesFile.withInputStream { stream ->
+    metaWearablesLocalProperties.load(stream)
+  }
+}
+
+def metaWearablesDatVersion = System.getenv("META_WEARABLES_DAT_VERSION") ?: "0.6.0"
+def metaWearablesEnableMockDevice =
+  (System.getenv("META_WEARABLES_ENABLE_MOCK_DEVICE") ?: "false").toBoolean()
+def metaWearablesGithubToken = (System.getenv("GITHUB_TOKEN") ?: "").trim()
+def metaWearablesLocalGithubToken =
+  (metaWearablesLocalProperties.getProperty("github_token") ?: "").trim()
+def metaWearablesRepoConfigured =
+  !metaWearablesGithubToken.isEmpty() || !metaWearablesLocalGithubToken.isEmpty()
+def metaWearablesAppIdConfigured =
+  !((System.getenv("META_WEARABLES_APP_ID") ?: "").trim().isEmpty())
+
+android {
+  namespace "expo.modules.metawearablesbridge"
+
+  defaultConfig {
+    minSdkVersion 31
+    buildConfigField "String", "META_WEARABLES_DAT_VERSION", "\"${metaWearablesDatVersion}\""
+    buildConfigField "boolean", "META_WEARABLES_ENABLE_MOCK_DEVICE", String.valueOf(metaWearablesEnableMockDevice)
+    buildConfigField "boolean", "META_WEARABLES_REPO_CONFIGURED", String.valueOf(metaWearablesRepoConfigured)
+    buildConfigField "boolean", "META_WEARABLES_APPLICATION_ID_CONFIGURED", String.valueOf(metaWearablesAppIdConfigured)
+  }
+}
+
+dependencies {
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+  implementation "androidx.core:core-ktx:1.15.0"
+  implementation "androidx.activity:activity-ktx:1.10.1"
+  implementation "androidx.exifinterface:exifinterface:1.3.7"
+
+  implementation "com.meta.wearable:mwdat-core:${metaWearablesDatVersion}"
+  implementation "com.meta.wearable:mwdat-camera:${metaWearablesDatVersion}"
+  if (metaWearablesEnableMockDevice) {
+    implementation "com.meta.wearable:mwdat-mockdevice:${metaWearablesDatVersion}"
+  }
+}

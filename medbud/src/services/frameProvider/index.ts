@@ -21,21 +21,33 @@ class SourceManager {
 
   private resolveLiveSelection() {
     const metaStatus = metaWearablesSource.getStatus();
+    const metaVideoConnected =
+      metaStatus.video.connectionState === 'connected' ||
+      metaStatus.video.connectionState === 'streaming_video';
+    const metaAudioConnected =
+      metaStatus.audio.connectionState === 'connected' ||
+      metaStatus.audio.connectionState === 'streaming_audio';
 
     this.activeVideoSource =
-      metaStatus.video.available && metaStatus.video.connectionState === 'connected'
+      metaStatus.video.available && metaVideoConnected
         ? metaWearablesSource
         : phoneFallbackSource;
     this.activeAudioSource =
-      metaStatus.audio.available && metaStatus.audio.connectionState === 'connected'
+      metaStatus.audio.available && metaAudioConnected
         ? metaWearablesSource
         : phoneFallbackSource;
 
     if (this.activeVideoSource.kind === 'phone' && this.activeAudioSource.kind === 'phone') {
       this.setFallbackReason(
-        metaStatus.video.available
-          ? metaStatus.reason ?? 'Meta glasses unavailable'
-          : 'Meta glasses unavailable'
+        metaStatus.sdkPresent === false
+          ? 'Meta native module is missing from this Android build'
+          : metaStatus.repoConfigured === false
+            ? 'Meta DAT GitHub Packages credentials are not configured'
+            : metaStatus.applicationIdConfigured === false
+              ? 'Meta DAT application ID is not configured'
+              : metaStatus.nativeConnectionState === 'developer_mode_required'
+                ? 'Enable Developer Mode and complete DAT registration in the Meta AI app'
+                : metaStatus.reason ?? 'Meta glasses unavailable'
       );
       return;
     }
@@ -171,6 +183,12 @@ class SourceManager {
           phone: phoneStatus,
           mock: mockStatus,
         },
+        hardwareValidation: {
+          metaActiveForVideo: false,
+          metaActiveForAudio: false,
+          latestFrameOrigin: null,
+          latestAudioOrigin: null,
+        },
         statusLabel: 'Mock source active',
       };
     }
@@ -179,14 +197,18 @@ class SourceManager {
     const activeAudioSource = this.activeAudioSource.kind;
     const mixedModeActive = activeVideoSource !== activeAudioSource;
     const selectedMode =
-      activeVideoSource === 'meta_glasses' && activeAudioSource === 'phone'
-        ? 'meta_video_phone_audio'
-        : 'phone_only';
+      activeVideoSource === 'meta_glasses' && activeAudioSource === 'meta_glasses'
+        ? 'meta_full'
+        : activeVideoSource === 'meta_glasses' && activeAudioSource === 'phone'
+          ? 'meta_video_phone_audio'
+          : 'phone_only';
     const fallbackActive =
       activeVideoSource === 'phone' ||
       activeAudioSource === 'phone';
     const statusLabel =
-      selectedMode === 'meta_video_phone_audio'
+      selectedMode === 'meta_full'
+        ? 'Using Meta glasses for supported live capture'
+        : selectedMode === 'meta_video_phone_audio'
         ? 'Using Meta glasses video with phone audio fallback'
         : 'Using phone fallback for live capture';
 
@@ -214,6 +236,13 @@ class SourceManager {
       sources: {
         meta: metaStatus,
         phone: phoneStatus,
+      },
+      hardwareValidation: {
+        metaActiveForVideo: activeVideoSource === 'meta_glasses',
+        metaActiveForAudio: activeAudioSource === 'meta_glasses',
+        latestFrameOrigin:
+          activeVideoSource === 'meta_glasses' ? 'meta_glasses' : 'phone',
+        latestAudioOrigin: activeAudioSource,
       },
       statusLabel,
       reason: this.lastConnectionError ?? this.fallbackReason ?? metaStatus.reason,

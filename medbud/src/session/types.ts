@@ -29,6 +29,15 @@ export type RecoveryFieldState = {
   recoveryReason: string;
 };
 
+export type BreathingConfirmation = {
+  value: NullableBoolean;
+  source: 'user_confirmation';
+  confirmedAt: number;
+  expiresAt: number;
+  transcript: string;
+  applied: boolean;
+};
+
 export type SessionMemory = {
   last_step_id: string | null;
   last_instruction: string | null;
@@ -44,6 +53,9 @@ export type SessionMemory = {
   severeBleedingConsecutiveTrueCount: number;
   severeBleedingContradictionRecent: boolean;
   lastHighUrgencyAt: number | null;
+  breathingConfirmation: BreathingConfirmation | null;
+  breathingConfirmationLockoutUntil: number | null;
+  breathingConfirmationSuppressedReason: string | null;
   fieldRecovery: {
     breathing: RecoveryFieldState;
     responsiveness: RecoveryFieldState;
@@ -76,6 +88,11 @@ export type MemoryContext = {
   urgentBypassEligible: boolean;
   urgentBypassReason: string;
   urgentBypassConfidence: number;
+  breathingConfirmation: BreathingConfirmation | null;
+  breathingConfirmationFresh: boolean;
+  breathingConfirmationApplied: boolean;
+  breathingConfirmationLockoutUntil: number | null;
+  breathingConfirmationSuppressedReason: string | null;
   breathingStableCycleCount: number;
   responsivenessStableCycleCount: number;
   breathingRecovered: boolean;

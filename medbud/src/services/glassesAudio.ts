@@ -1,11 +1,13 @@
+import { metaWearablesBridge } from './metaWearablesBridge';
+
 export const glassesAudio = {
   async isPlaybackAvailable() {
-    // TODO: Query the paired-device Bluetooth or Meta wearable audio path here.
-    return false;
+    const status = await metaWearablesBridge.getStatus();
+    return status.capabilities.playback;
   },
 
   async isMicrophoneAvailable() {
-    // TODO: Query the paired-device Bluetooth or Meta wearable microphone path here.
-    return false;
+    const status = await metaWearablesBridge.getStatus();
+    return status.capabilities.audio;
   },
 };

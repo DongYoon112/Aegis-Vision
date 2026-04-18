@@ -51,6 +51,9 @@ export type MergedState = {
   image_quality: ImageQuality;
   confidence: number;
   notes: string[];
+  breathing_confirmation_value?: NullableBoolean;
+  breathing_confirmation_source?: 'user_confirmation' | null;
+  breathing_confirmation_fresh?: boolean;
 };
 
 export type CasePhase =
@@ -75,6 +78,7 @@ export type ActionSkipReason =
   | 'not_allowed'
   | 'field_does_not_need_confirmation'
   | 'confirmation_recovered'
+  | 'user_already_confirmed_breathing'
   | 'cooldown'
   | 'anti_repeat_suppressed'
   | 'severe_bleeding_override'
@@ -114,6 +118,8 @@ export type ProtocolDecision = {
   anti_repeat_suppressed?: boolean;
   anti_repeat_reason?: string;
   anti_repeat_suppressed_prompt_type?: PromptType | null;
+  breathing_confirmation_suppressed?: boolean;
+  breathing_confirmation_suppression_reason?: string;
   reassess_exited_after_recovery?: boolean;
   reassess_exit_reason?: string;
   prompt_type?: PromptType | null;
