@@ -17,6 +17,7 @@ import { TranscriptCard } from '../components/TranscriptCard';
 import { parser } from '../llm/parser';
 import { protocolEngine } from '../protocol/engine';
 import { mergeState } from '../protocol/mergeState';
+import { evaluateTrust } from '../protocol/trust';
 import type {
   CameraFrame,
   MergedState,
@@ -24,6 +25,13 @@ import type {
   ProtocolDecision,
   VisionOutput,
 } from '../protocol/types';
+import type { TrustAssessment } from '../protocol/trustTypes';
+import {
+  applyDecisionToMemory,
+  buildMemoryContext,
+  createInitialSessionMemory,
+} from '../session/sessionMemory';
+import type { MemoryContext, SessionMemory } from '../session/types';
 import { elevenLabsSTT } from '../services/elevenlabsSTT';
 import { elevenLabsTTS } from '../services/elevenlabsTTS';
 import { providerManager } from '../services/frameProvider';
@@ -61,8 +69,13 @@ export function HomeScreen() {
   const [parserOutput, setParserOutput] = useState<ParserOutput | null>(null);
   const [visionOutput, setVisionOutput] = useState<VisionOutput | null>(null);
   const [mergedState, setMergedState] = useState<MergedState | null>(null);
+  const [trustAssessment, setTrustAssessment] = useState<TrustAssessment | null>(null);
   const [protocolDecision, setProtocolDecision] = useState<ProtocolDecision | null>(
     null
+  );
+  const [memoryContext, setMemoryContext] = useState<MemoryContext | null>(null);
+  const [sessionMemory, setSessionMemory] = useState<SessionMemory>(
+    createInitialSessionMemory()
   );
   const [latestFrame, setLatestFrame] = useState<CameraFrame | null>(null);
   const [spokenResponse, setSpokenResponse] = useState('');
@@ -118,7 +131,9 @@ export function HomeScreen() {
     setParserOutput(null);
     setVisionOutput(null);
     setMergedState(null);
+    setTrustAssessment(null);
     setProtocolDecision(null);
+    setMemoryContext(null);
     setLatestFrame(null);
     setSpokenResponse('');
     setErrorMessage('');
@@ -196,8 +211,15 @@ export function HomeScreen() {
       setSessionState('deciding');
       const merged = mergeState(parsed, vision);
       setMergedState(merged);
-      const decision = protocolEngine.decide(merged);
+      const trust = evaluateTrust(merged);
+      setTrustAssessment(trust);
+      const nextMemoryContext = buildMemoryContext(sessionMemory, merged, trust);
+      setMemoryContext(nextMemoryContext);
+      const decision = protocolEngine.decide(merged, trust, nextMemoryContext);
       setProtocolDecision(decision);
+      setSessionMemory((currentMemory) =>
+        applyDecisionToMemory(currentMemory, decision, merged, trust)
+      );
 
       const rephrased = await openAIService.rephraseProtocolDecision(decision);
       setSpokenResponse(rephrased);
@@ -233,11 +255,11 @@ export function HomeScreen() {
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.header}>
-        <Text style={styles.eyebrow}>Aegis Vision Stage 3</Text>
-        <Text style={styles.title}>Stitch wearable frame-source loop</Text>
+        <Text style={styles.eyebrow}>Aegis Vision Stage 4.3</Text>
+        <Text style={styles.title}>Stitch memory-aware emergency loop</Text>
         <Text style={styles.subtitle}>
-          The phone still orchestrates the session while the active frame source can
-          come from Meta glasses, phone fallback, or a mock device.
+          The phone still orchestrates the session while Stitch now tracks recent
+          signals and protocol steps to avoid repetitive guidance across turns.
         </Text>
       </View>
 
@@ -360,7 +382,31 @@ export function HomeScreen() {
       <JsonCard
         title="Merged State"
         json={stringifyValue(mergedState)}
-        placeholder='{\n  "responsive": null,\n  "breathing": null,\n  "severe_bleeding": null,\n  "injury_location": null,\n  "person_visible": null,\n  "casualty_supine": null,\n  "limb_visible": null,\n  "image_quality": "unclear",\n  "confidence": 0,\n  "notes": []\n}'
+        placeholder='{\n  "responsive": null,\n  "breathing": null,\n  "severe_bleeding": null,\n  "parser_responsive": null,\n  "parser_breathing": null,\n  "parser_severe_bleeding": null,\n  "injury_location": null,\n  "person_visible": null,\n  "casualty_supine": null,\n  "limb_visible": null,\n  "image_quality": "unclear",\n  "confidence": 0,\n  "notes": []\n}'
+      />
+      <JsonCard
+        title="Trust Assessment"
+        json={stringifyValue(trustAssessment)}
+        placeholder='{\n  "agreement": 0,\n  "signal_quality": "low",\n  "usable_for_action": false,\n  "needs_confirmation": true,\n  "reason": ""\n}'
+      />
+      <JsonCard
+        title="Session Memory"
+        json={stringifyValue({
+          last_step_id: sessionMemory.last_step_id,
+          turn_count: sessionMemory.turn_count,
+          recent_steps: sessionMemory.recent_steps,
+          trust_adjusted_confidence: memoryContext?.effectiveConfidence ?? sessionMemory.last_confidence,
+          recent_signals: sessionMemory.recent_signals,
+          cooldown_active:
+            protocolDecision !== null &&
+            memoryContext !== null &&
+            (memoryContext.last_step_id === protocolDecision.step_id ||
+              memoryContext.recent_steps.includes(protocolDecision.step_id)),
+          stability_bias: memoryContext?.signalsStable ?? false,
+          confidence_delta: memoryContext?.confidenceDelta ?? 0,
+          signals_improving: memoryContext?.signalsImproving ?? false,
+        })}
+        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "cooldown_active": false,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
       />
       <JsonCard
         title="Protocol Decision"

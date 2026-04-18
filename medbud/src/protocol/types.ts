@@ -39,6 +39,9 @@ export type MergedState = {
   responsive: NullableBoolean;
   breathing: NullableBoolean;
   severe_bleeding: NullableBoolean;
+  parser_responsive: NullableBoolean;
+  parser_breathing: NullableBoolean;
+  parser_severe_bleeding: NullableBoolean;
   injury_location: string | null;
   person_visible: NullableBoolean;
   casualty_supine: NullableBoolean;

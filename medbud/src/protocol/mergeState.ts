@@ -66,6 +66,9 @@ export const mergeState = (
     responsive: parser.responsive,
     breathing: parser.breathing,
     severe_bleeding: severeBleeding,
+    parser_responsive: parser.responsive,
+    parser_breathing: parser.breathing,
+    parser_severe_bleeding: parser.severe_bleeding,
     injury_location: parser.injury_location,
     person_visible: vision.person_visible,
     casualty_supine:
