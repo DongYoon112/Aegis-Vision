@@ -6,7 +6,9 @@ const LABELS: Record<SessionState, string> = {
   idle: 'Idle',
   listening: 'Listening',
   transcribing: 'Transcribing',
-  thinking: 'Thinking',
+  parsing: 'Parsing',
+  vision: 'Vision',
+  deciding: 'Deciding',
   speaking: 'Speaking',
   error: 'Error',
 };
@@ -15,7 +17,9 @@ const COLORS: Record<SessionState, string> = {
   idle: '#d7e4ff',
   listening: '#d8f5dc',
   transcribing: '#fff2c7',
-  thinking: '#ffe0c7',
+  parsing: '#ffe0c7',
+  vision: '#d4f4f1',
+  deciding: '#f4dbff',
   speaking: '#e1d8ff',
   error: '#ffd6d6',
 };

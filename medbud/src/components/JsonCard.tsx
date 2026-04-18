@@ -1,17 +1,21 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 type JsonCardProps = {
+  title?: string;
   json: string;
+  placeholder?: string;
 };
 
-export function JsonCard({ json }: JsonCardProps) {
+export function JsonCard({
+  title = 'Structured JSON',
+  json,
+  placeholder = '{}',
+}: JsonCardProps) {
   return (
     <View style={styles.card}>
-      <Text style={styles.title}>Structured JSON</Text>
+      <Text style={styles.title}>{title}</Text>
       <View style={styles.codeBlock}>
-        <Text style={styles.code}>
-          {json || '{\n  "responsive": null,\n  "severe_bleeding": null,\n  "breathing": null,\n  "notes": [],\n  "next_step": ""\n}'}
-        </Text>
+        <Text style={styles.code}>{json || placeholder}</Text>
       </View>
     </View>
   );

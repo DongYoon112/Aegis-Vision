@@ -1,14 +1,8 @@
 import { medbudEnv } from '../utils/env';
 import type { RecordedAudio } from '../types/session';
 
-const MOCK_TRANSCRIPTS = [
-  'The patient is awake, breathing, and has a deep cut on the forearm with heavy bleeding.',
-  'The casualty is not responding. I do not see major bleeding. I am not sure if they are breathing.',
-  'The person is responsive and talking. There is blood on the leg and they say it hurts to breathe.',
-];
-
-const chooseMockTranscript = () =>
-  MOCK_TRANSCRIPTS[Math.floor(Math.random() * MOCK_TRANSCRIPTS.length)];
+const MOCK_TRANSCRIPT =
+  'The patient is awake, breathing, and has heavy bleeding from the left forearm.';
 
 const ensureTranscript = (value: unknown) => {
   if (typeof value === 'string' && value.trim()) {
@@ -54,7 +48,7 @@ async function transcribeAudioLive(audio: RecordedAudio) {
 
 async function transcribeAudio(audio: RecordedAudio) {
   if (medbudEnv.useMocks) {
-    return chooseMockTranscript();
+    return MOCK_TRANSCRIPT;
   }
 
   return transcribeAudioLive(audio);

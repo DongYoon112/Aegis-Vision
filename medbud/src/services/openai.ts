@@ -1,129 +1,40 @@
-import type { EmergencyAssessment, ModelAnalysis } from '../types/session';
+import { rephrasePrompt } from '../prompts/rephrasePrompt';
+import type { ProtocolDecision } from '../protocol/types';
 import { medbudEnv } from '../utils/env';
 
-const SYSTEM_PROMPT = [
-  'You are Stitch, the calm emergency guidance assistant inside Aegis Vision.',
-  'Return only immediate next-step guidance.',
-  'Keep spoken guidance short.',
-  'Do not give long explanations.',
-  'Do not freestyle advanced medical diagnosis.',
-  'Use null when the transcript does not clearly establish a field.',
-].join(' ');
-
-const RESPONSE_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    assessment: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        responsive: {
-          type: ['boolean', 'null'],
-        },
-        severe_bleeding: {
-          type: ['boolean', 'null'],
-        },
-        breathing: {
-          type: ['boolean', 'null'],
-        },
-        notes: {
-          type: 'array',
-          items: {
-            type: 'string',
-          },
-        },
-        next_step: {
-          type: 'string',
-        },
-      },
-      required: ['responsive', 'severe_bleeding', 'breathing', 'notes', 'next_step'],
-    },
-    spokenResponse: {
-      type: 'string',
-    },
-  },
-  required: ['assessment', 'spokenResponse'],
-} as const;
-
-const MOCK_ANALYSES: ModelAnalysis[] = [
-  {
-    assessment: {
-      responsive: true,
-      severe_bleeding: true,
-      breathing: true,
-      notes: ['Deep arm wound reported', 'Heavy bleeding mentioned'],
-      next_step: 'Apply firm pressure to the wound now.',
-    },
-    spokenResponse: 'Apply firm pressure to the wound now.',
-  },
-  {
-    assessment: {
-      responsive: false,
-      severe_bleeding: null,
-      breathing: null,
-      notes: ['Patient is unresponsive', 'Breathing is uncertain'],
-      next_step: 'Check breathing and call emergency services now.',
-    },
-    spokenResponse: 'Check breathing and call emergency services now.',
-  },
-  {
-    assessment: {
-      responsive: true,
-      severe_bleeding: true,
-      breathing: null,
-      notes: ['Leg bleeding reported', 'Breathing concern mentioned'],
-      next_step: 'Control the bleeding and reassess breathing.',
-    },
-    spokenResponse: 'Control the bleeding and reassess breathing.',
-  },
-];
-
-const isNullableBoolean = (value: unknown) =>
-  typeof value === 'boolean' || value === null;
-
-const isAssessment = (value: unknown): value is EmergencyAssessment => {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-
-  return (
-    isNullableBoolean(candidate.responsive) &&
-    isNullableBoolean(candidate.severe_bleeding) &&
-    isNullableBoolean(candidate.breathing) &&
-    Array.isArray(candidate.notes) &&
-    candidate.notes.every((note) => typeof note === 'string') &&
-    typeof candidate.next_step === 'string'
-  );
+type InputTextContent = {
+  type: 'input_text';
+  text: string;
 };
 
-const parseModelAnalysis = (value: unknown): ModelAnalysis => {
-  if (!value || typeof value !== 'object') {
-    throw new Error('OpenAI returned malformed data.');
-  }
-
-  const candidate = value as Record<string, unknown>;
-
-  if (!isAssessment(candidate.assessment)) {
-    throw new Error('OpenAI response did not match the emergency assessment schema.');
-  }
-
-  if (typeof candidate.spokenResponse !== 'string' || !candidate.spokenResponse.trim()) {
-    throw new Error('OpenAI response did not include a spoken response.');
-  }
-
-  return {
-    assessment: candidate.assessment,
-    spokenResponse: candidate.spokenResponse.trim(),
-  };
+type InputImageContent = {
+  type: 'input_image';
+  image_url: string;
+  detail?: 'low' | 'high' | 'auto';
 };
 
-const chooseMockAnalysis = () =>
-  MOCK_ANALYSES[Math.floor(Math.random() * MOCK_ANALYSES.length)];
+type ResponseInputMessage = {
+  role: 'system' | 'user';
+  content: Array<InputTextContent | InputImageContent>;
+};
 
-async function analyzeTranscriptLive(transcript: string): Promise<ModelAnalysis> {
+type StructuredResponseOptions = {
+  name: string;
+  schema: Record<string, unknown>;
+  input: ResponseInputMessage[];
+};
+
+const FALLBACK_REPHRASE = (decision: ProtocolDecision) => {
+  const trimmed = decision.instruction.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  return words.slice(0, 12).join(' ');
+};
+
+async function createStructuredResponse<T>({
+  name,
+  schema,
+  input,
+}: StructuredResponseOptions): Promise<T> {
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
@@ -132,32 +43,13 @@ async function analyzeTranscriptLive(transcript: string): Promise<ModelAnalysis>
     },
     body: JSON.stringify({
       model: medbudEnv.openai.model,
-      input: [
-        {
-          role: 'system',
-          content: [
-            {
-              type: 'input_text',
-              text: SYSTEM_PROMPT,
-            },
-          ],
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: `Transcript: ${transcript}`,
-            },
-          ],
-        },
-      ],
+      input,
       text: {
         format: {
           type: 'json_schema',
-          name: 'stitch_stage1_response',
+          name,
           strict: true,
-          schema: RESPONSE_SCHEMA,
+          schema,
         },
       },
     }),
@@ -176,17 +68,82 @@ async function analyzeTranscriptLive(transcript: string): Promise<ModelAnalysis>
     throw new Error('OpenAI returned no structured output text.');
   }
 
-  return parseModelAnalysis(JSON.parse(data.output_text));
+  return JSON.parse(data.output_text) as T;
 }
 
-async function analyzeTranscript(transcript: string): Promise<ModelAnalysis> {
-  if (medbudEnv.useMocks) {
-    return chooseMockAnalysis();
+const REPHRASE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    spoken_response: {
+      type: 'string',
+    },
+  },
+  required: ['spoken_response'],
+} as const;
+
+async function rephraseProtocolDecisionLive(
+  decision: ProtocolDecision,
+  systemPrompt: string
+): Promise<string> {
+  const result = await createStructuredResponse<{ spoken_response?: unknown }>({
+    name: 'stitch_stage2_rephrase',
+    schema: REPHRASE_SCHEMA,
+    input: [
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text: systemPrompt,
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: JSON.stringify({
+              instruction: decision.instruction,
+              needs_confirmation: decision.needs_confirmation,
+              priority: decision.priority,
+            }),
+          },
+        ],
+      },
+    ],
+  });
+
+  if (typeof result.spoken_response !== 'string') {
+    throw new Error('OpenAI rephrase response was malformed.');
   }
 
-  return analyzeTranscriptLive(transcript);
+  const sanitized = result.spoken_response.trim().replace(/\s+/g, ' ');
+
+  if (!sanitized) {
+    throw new Error('OpenAI rephrase response was empty.');
+  }
+
+  if (sanitized.split(' ').filter(Boolean).length > 12) {
+    return FALLBACK_REPHRASE(decision);
+  }
+
+  return sanitized;
 }
 
 export const openAIService = {
-  analyzeTranscript,
+  createStructuredResponse,
+  fallbackRephrase: FALLBACK_REPHRASE,
+  async rephraseProtocolDecision(decision: ProtocolDecision): Promise<string> {
+    if (medbudEnv.useMocks) {
+      return FALLBACK_REPHRASE(decision);
+    }
+
+    try {
+      return await rephraseProtocolDecisionLive(decision, rephrasePrompt);
+    } catch {
+      return FALLBACK_REPHRASE(decision);
+    }
+  },
 };

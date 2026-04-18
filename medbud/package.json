@@ -12,6 +12,7 @@
   "dependencies": {
     "expo": "~54.0.33",
     "expo-audio": "~1.0.14",
+    "expo-camera": "~17.0.10",
     "expo-file-system": "~19.0.17",
     "expo-speech": "~13.0.1",
     "expo-status-bar": "~3.0.8",

@@ -32,6 +32,13 @@
         {
           "microphonePermission": "Allow Aegis Vision to access your microphone for emergency assistant recordings."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Aegis Vision to access your camera for sampled emergency scene analysis.",
+          "microphonePermission": "Allow Aegis Vision to access your microphone for emergency assistant recordings."
+        }
       ]
     ]
   }
