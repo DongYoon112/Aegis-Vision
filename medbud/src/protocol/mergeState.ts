@@ -68,7 +68,12 @@ export const mergeState = (
     severe_bleeding: severeBleeding,
     injury_location: parser.injury_location,
     person_visible: vision.person_visible,
-    casualty_supine: vision.casualty_supine,
+    casualty_supine:
+      vision.body_position === 'supine'
+        ? true
+        : vision.body_position === 'upright'
+          ? false
+          : null,
     limb_visible: vision.limb_visible,
     image_quality: vision.image_quality,
     confidence: cappedConfidence,

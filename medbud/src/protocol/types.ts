@@ -1,6 +1,13 @@
 export type NullableBoolean = boolean | null;
 
 export type ImageQuality = 'usable' | 'blurry' | 'dark' | 'unclear';
+export type BodyPosition = 'supine' | 'upright' | 'unknown' | null;
+export type VisibleLimb =
+  | 'left_arm'
+  | 'right_arm'
+  | 'left_leg'
+  | 'right_leg'
+  | null;
 
 export type CameraFrame = {
   uri: string;
@@ -21,9 +28,9 @@ export type ParserOutput = {
 
 export type VisionOutput = {
   person_visible: NullableBoolean;
-  casualty_supine: NullableBoolean;
+  body_position: BodyPosition;
   severe_bleeding_likely: NullableBoolean;
-  limb_visible: string | null;
+  limb_visible: VisibleLimb;
   image_quality: ImageQuality;
   confidence: number;
 };
@@ -52,6 +59,17 @@ export type ProtocolDecision = {
 };
 
 const IMAGE_QUALITIES: ImageQuality[] = ['usable', 'blurry', 'dark', 'unclear'];
+const BODY_POSITIONS: Exclude<BodyPosition, null>[] = [
+  'supine',
+  'upright',
+  'unknown',
+];
+const VISIBLE_LIMBS: Exclude<VisibleLimb, null>[] = [
+  'left_arm',
+  'right_arm',
+  'left_leg',
+  'right_leg',
+];
 
 export const clampConfidence = (value: unknown, fallback = 0): number => {
   if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
@@ -97,6 +115,28 @@ export const sanitizeImageQuality = (value: unknown): ImageQuality =>
     ? (value as ImageQuality)
     : 'unclear';
 
+export const sanitizeBodyPosition = (value: unknown): BodyPosition => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return BODY_POSITIONS.includes(trimmed as Exclude<BodyPosition, null>)
+    ? (trimmed as Exclude<BodyPosition, null>)
+    : null;
+};
+
+export const sanitizeVisibleLimb = (value: unknown): VisibleLimb => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return VISIBLE_LIMBS.includes(trimmed as Exclude<VisibleLimb, null>)
+    ? (trimmed as Exclude<VisibleLimb, null>)
+    : null;
+};
+
 export const fallbackParserOutput = (): ParserOutput => ({
   responsive: null,
   severe_bleeding: null,
@@ -108,7 +148,7 @@ export const fallbackParserOutput = (): ParserOutput => ({
 
 export const fallbackVisionOutput = (imageQuality: ImageQuality = 'unclear'): VisionOutput => ({
   person_visible: null,
-  casualty_supine: null,
+  body_position: null,
   severe_bleeding_likely: null,
   limb_visible: null,
   image_quality: imageQuality,

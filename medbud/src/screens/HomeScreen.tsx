@@ -31,13 +31,11 @@ import type { FrameProvider, FrameProviderStatus } from '../services/frameProvid
 import { openAIService } from '../services/openai';
 import { player } from '../services/player';
 import { recorder } from '../services/recorder';
-import { visionService } from '../services/vision';
+import { visionSignals } from '../services/visionSignals';
 import type { SessionState } from '../types/session';
 import { assertLiveConfig, medbudEnv } from '../utils/env';
 
 const AUTO_STOP_MS = 5000;
-const FRAME_STALE_MS = 3000;
-
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
@@ -45,21 +43,6 @@ const sleep = (ms: number) =>
 
 const stringifyValue = (value: unknown, placeholder = '{}') =>
   value ? JSON.stringify(value, null, 2) : placeholder;
-
-const isFrameFresh = (frame: CameraFrame | null) => {
-  if (!frame) {
-    return false;
-  }
-
-  const capturedAt = Date.parse(frame.capturedAt);
-  if (Number.isNaN(capturedAt)) {
-    return false;
-  }
-
-  return Date.now() - capturedAt <= FRAME_STALE_MS;
-};
-
-const getFreshFrame = (frame: CameraFrame | null) => (isFrameFresh(frame) ? frame : null);
 
 const defaultProviderStatus: FrameProviderStatus = {
   kind: medbudEnv.useMocks ? 'mock' : 'expo_camera',
@@ -198,8 +181,6 @@ export function HomeScreen() {
       setLatestFrame(sampledFrame);
       syncProviderStatus();
 
-      const freshFrame = getFreshFrame(sampledFrame);
-
       setSessionState('transcribing');
       const transcriptText = await elevenLabsSTT.transcribeAudio(audio);
       setTranscript(transcriptText);
@@ -209,7 +190,7 @@ export function HomeScreen() {
       setParserOutput(parsed);
 
       setSessionState('vision');
-      const vision = await visionService.analyzeFrame(freshFrame);
+      const vision = await visionSignals.analyzeFrame(sampledFrame, Date.now());
       setVisionOutput(vision);
 
       setSessionState('deciding');
@@ -244,7 +225,7 @@ export function HomeScreen() {
   const showPhonePreview = providerStatus.kind === 'expo_camera';
   const showSnapshot = providerStatus.kind === 'meta_glasses' && latestFrame?.uri;
   const frameFreshness = latestFrame
-    ? isFrameFresh(latestFrame)
+    ? Date.now() - Date.parse(latestFrame.capturedAt) <= 3000
       ? 'fresh'
       : 'stale'
     : 'none';
@@ -374,7 +355,7 @@ export function HomeScreen() {
       <JsonCard
         title="Vision Output"
         json={stringifyValue(visionOutput)}
-        placeholder='{\n  "person_visible": null,\n  "casualty_supine": null,\n  "severe_bleeding_likely": null,\n  "limb_visible": null,\n  "image_quality": "unclear",\n  "confidence": 0\n}'
+        placeholder='{\n  "person_visible": null,\n  "body_position": null,\n  "severe_bleeding_likely": null,\n  "limb_visible": null,\n  "image_quality": "unclear",\n  "confidence": 0\n}'
       />
       <JsonCard
         title="Merged State"
