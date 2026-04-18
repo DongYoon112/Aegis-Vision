@@ -1,4 +1,5 @@
 import { clampConfidence, type CameraFrame, type VisionOutput } from '../../protocol/types';
+import { detectorAdapter } from './detectorAdapter';
 import { analyzeObjectSignals } from './objectSignals';
 import { analyzePoseSignals } from './poseSignals';
 import { evaluateFrameQuality } from './frameQuality';
@@ -29,28 +30,41 @@ export const analyzeLocalVision = async (
 
     const pose = await analyzePoseSignals(frame, quality);
     const objectSignals = await analyzeObjectSignals(frame, quality);
+    const detectorWeight = objectSignals.object_confidence < 0.3 ? 0.1 : 0.4;
+    const personVisible =
+      pose.person_visible === null && objectSignals.person_box_present === true
+        ? true
+        : pose.person_visible;
 
     const confidence = clampConfidence(
-      0.7 * pose.pose_confidence + 0.3 * objectSignals.object_confidence,
+      0.6 * pose.pose_confidence + detectorWeight * objectSignals.object_confidence,
       0
     );
 
+    const severeBleedingLikely =
+      personVisible === true &&
+      objectSignals.bleeding_region_candidate === true &&
+      objectSignals.object_confidence >= 0.7
+        ? true
+        : personVisible === true &&
+            objectSignals.bleeding_region_candidate === false &&
+            objectSignals.object_confidence >= 0.7
+          ? false
+          : null;
+
     return {
-      person_visible: pose.person_visible,
+      person_visible: personVisible,
       body_position: pose.body_position,
-      severe_bleeding_likely:
-        objectSignals.bleeding_region_candidate === true &&
-        objectSignals.object_confidence >= 0.7
-          ? true
-          : objectSignals.bleeding_region_candidate === false &&
-              objectSignals.object_confidence >= 0.7
-            ? false
-            : null,
-      limb_visible: objectSignals.limb_visible,
+      severe_bleeding_likely: severeBleedingLikely,
+      limb_visible: personVisible === false ? null : objectSignals.limb_visible,
       image_quality: quality.image_quality,
       confidence,
     };
   } catch {
     return getStrictFallback();
   }
+};
+
+export const localVisionDebug = {
+  getDetectorStatus: () => detectorAdapter.getStatus(),
 };

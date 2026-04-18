@@ -15,6 +15,7 @@ import { ResponseCard } from '../components/ResponseCard';
 import { StatusBadge } from '../components/StatusBadge';
 import { TranscriptCard } from '../components/TranscriptCard';
 import { parser } from '../llm/parser';
+import { getPromptTypeForDecision } from '../protocol/decisionMetadata';
 import { protocolEngine } from '../protocol/engine';
 import { mergeState } from '../protocol/mergeState';
 import { evaluateTrust } from '../protocol/trust';
@@ -40,10 +41,12 @@ import { openAIService } from '../services/openai';
 import { player } from '../services/player';
 import { recorder } from '../services/recorder';
 import { visionSignals } from '../services/visionSignals';
+import { localVisionDebug } from '../services/localVision';
 import type { SessionState } from '../types/session';
 import { assertLiveConfig, medbudEnv } from '../utils/env';
 
 const AUTO_STOP_MS = 5000;
+const CONFIRMATION_COOLDOWN_MS = 8000;
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
@@ -82,12 +85,14 @@ export function HomeScreen() {
   const [errorMessage, setErrorMessage] = useState('');
   const [providerStatus, setProviderStatus] =
     useState<FrameProviderStatus>(defaultProviderStatus);
+  const [detectorStatus, setDetectorStatus] = useState(localVisionDebug.getDetectorStatus());
   const [initializingProvider, setInitializingProvider] = useState(true);
 
   const isBusy = sessionState !== 'idle';
 
   const syncProviderStatus = () => {
     setProviderStatus(providerManager.getStatus());
+    setDetectorStatus(localVisionDebug.getDetectorStatus());
   };
 
   useEffect(() => {
@@ -214,8 +219,20 @@ export function HomeScreen() {
       const trust = evaluateTrust(merged);
       setTrustAssessment(trust);
       const nextMemoryContext = buildMemoryContext(sessionMemory, merged, trust);
-      setMemoryContext(nextMemoryContext);
       const decision = protocolEngine.decide(merged, trust, nextMemoryContext);
+      const decisionPromptType = decision.prompt_type ?? getPromptTypeForDecision(decision);
+      const cooldownActive =
+        decisionPromptType !== null &&
+        nextMemoryContext.lastPromptType === decisionPromptType &&
+        nextMemoryContext.lastPromptAt !== null &&
+        Date.now() - nextMemoryContext.lastPromptAt < CONFIRMATION_COOLDOWN_MS;
+      setMemoryContext({
+        ...nextMemoryContext,
+        confirmationCooldownActive: cooldownActive,
+        confirmationPromptSuppressed: decision.cooldown_suppressed ?? false,
+        suppressedPromptType:
+          decision.cooldown_suppressed === true ? decisionPromptType : null,
+      });
       setProtocolDecision(decision);
       setSessionMemory((currentMemory) =>
         applyDecisionToMemory(currentMemory, decision, merged, trust)
@@ -298,6 +315,18 @@ export function HomeScreen() {
         <Text style={styles.statusMeta}>
           Last frame timestamp: {providerStatus.lastFrameAt ?? 'none'}
         </Text>
+        <Text style={styles.statusMeta}>
+          Detector backend: {detectorStatus.backend}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Detector available: {detectorStatus.available ? 'yes' : 'no'}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Last analyzed frame source: {latestFrame?.source ?? 'none'}
+        </Text>
+        {detectorStatus.reason ? (
+          <Text style={styles.statusMeta}>Detector reason: {detectorStatus.reason}</Text>
+        ) : null}
         {providerStatus.reason ? (
           <Text style={styles.statusMeta}>Reason: {providerStatus.reason}</Text>
         ) : null}
@@ -387,7 +416,7 @@ export function HomeScreen() {
       <JsonCard
         title="Trust Assessment"
         json={stringifyValue(trustAssessment)}
-        placeholder='{\n  "agreement": 0,\n  "signal_quality": "low",\n  "usable_for_action": false,\n  "needs_confirmation": true,\n  "reason": ""\n}'
+        placeholder='{\n  "agreement": 0,\n  "signal_quality": "low",\n  "usable_for_action": false,\n  "needs_confirmation": true,\n  "reason": "",\n  "fields": {\n    "breathing": {\n      "needsConfirmation": true,\n      "confidence": 0,\n      "reason": ""\n    },\n    "severe_bleeding": {\n      "needsConfirmation": true,\n      "confidence": 0,\n      "reason": ""\n    },\n    "responsiveness": {\n      "needsConfirmation": true,\n      "confidence": 0,\n      "reason": ""\n    }\n  },\n  "allowedActions": [],\n  "blockedActions": []\n}'
       />
       <JsonCard
         title="Session Memory"
@@ -397,21 +426,22 @@ export function HomeScreen() {
           recent_steps: sessionMemory.recent_steps,
           trust_adjusted_confidence: memoryContext?.effectiveConfidence ?? sessionMemory.last_confidence,
           recent_signals: sessionMemory.recent_signals,
-          cooldown_active:
-            protocolDecision !== null &&
-            memoryContext !== null &&
-            (memoryContext.last_step_id === protocolDecision.step_id ||
-              memoryContext.recent_steps.includes(protocolDecision.step_id)),
+          lastPromptType: sessionMemory.lastPromptType,
+          lastPromptAt: sessionMemory.lastPromptAt,
+          cooldown_active: memoryContext?.confirmationCooldownActive ?? false,
+          confirmation_prompt_suppressed:
+            memoryContext?.confirmationPromptSuppressed ?? false,
+          suppressed_prompt_type: memoryContext?.suppressedPromptType ?? null,
           stability_bias: memoryContext?.signalsStable ?? false,
           confidence_delta: memoryContext?.confidenceDelta ?? 0,
           signals_improving: memoryContext?.signalsImproving ?? false,
         })}
-        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "cooldown_active": false,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
+        placeholder='{\n  "last_step_id": null,\n  "turn_count": 0,\n  "recent_steps": [],\n  "trust_adjusted_confidence": 0,\n  "recent_signals": {\n    "bleeding": null,\n    "responsive": null,\n    "breathing": null\n  },\n  "lastPromptType": null,\n  "lastPromptAt": null,\n  "cooldown_active": false,\n  "confirmation_prompt_suppressed": false,\n  "suppressed_prompt_type": null,\n  "stability_bias": false,\n  "confidence_delta": 0,\n  "signals_improving": false\n}'
       />
       <JsonCard
         title="Protocol Decision"
         json={stringifyValue(protocolDecision)}
-        placeholder='{\n  "step_id": "",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false\n}'
+        placeholder='{\n  "step_id": "",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false,\n  "prompt_type": null,\n  "cooldown_suppressed": false\n}'
       />
       <ResponseCard response={spokenResponse} />
       <ErrorCard error={errorMessage} />

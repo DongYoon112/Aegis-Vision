@@ -26,6 +26,7 @@ export type ObjectSignalResult = {
   limb_visible: VisibleLimb;
   bleeding_region_candidate: NullableBoolean;
   object_confidence: number;
+  person_box_present?: NullableBoolean;
 };
 
 export type LocalVisionAnalyzer = (

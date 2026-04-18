@@ -5,8 +5,17 @@ import type {
   ProtocolDecision,
   ProtocolPriority,
 } from './types';
+import {
+  getActionForPromptType,
+  getFieldForAction,
+  getPromptTypeForDecision,
+  getPromptTypeForField,
+} from './decisionMetadata';
 import type { TrustAssessment } from './trustTypes';
 import type { CooldownStrength, MemoryContext } from '../session/types';
+
+const CONFIRMATION_COOLDOWN_MS = 8000;
+const MATERIAL_CONFIDENCE_DELTA = 0.12;
 
 const makeDecision = (
   step_id: string,
@@ -20,6 +29,8 @@ const makeDecision = (
   instruction,
   reason,
   needs_confirmation,
+  prompt_type: needs_confirmation ? getPromptTypeForDecision({ step_id, needs_confirmation }) : null,
+  cooldown_suppressed: false,
 });
 
 const PRIORITY_ORDER: ProtocolPriority[] = ['low', 'medium', 'high', 'critical'];
@@ -28,6 +39,25 @@ const isCriticalStep = (stepId: string) =>
   ['control_bleeding', 'check_breathing', 'check_responsive', 'confirm_state'].includes(
     stepId
   );
+
+const getFallbackPromptType = (
+  state: MergedState,
+  trust: TrustAssessment
+) => {
+  if (trust.fields.severe_bleeding.needsConfirmation && state.severe_bleeding !== false) {
+    return 'confirm_bleeding';
+  }
+
+  if (trust.fields.breathing.needsConfirmation) {
+    return 'confirm_breathing';
+  }
+
+  if (trust.fields.responsiveness.needsConfirmation) {
+    return 'confirm_responsiveness';
+  }
+
+  return null;
+};
 
 const normalizeNullableBoolean = (value: NullableBoolean | 'unknown' | unknown): NullableBoolean =>
   value === true || value === false ? value : null;
@@ -307,21 +337,194 @@ const makeFollowUpDecision = (
   stepId: string,
   state: MergedState,
   memory: MemoryContext,
-  reason: string
-) =>
-  makeDecision(
-    `${stepId}_follow_up`,
-    stepId === 'control_bleeding' || stepId === 'check_breathing' ? 'high' : 'low',
-    getFollowUpInstruction(stepId, state, getFollowUpTier(memory.turn_count)),
-    reason,
-    true
-  );
+  reason: string,
+  promptType: ProtocolDecision['prompt_type'] = null
+) => {
+  const promptAction = getActionForPromptType(promptType ?? null);
+  const instructionStep =
+    stepId === 'confirm_state' && promptAction ? promptAction : stepId;
+
+  return {
+    ...makeDecision(
+      `${stepId}_follow_up`,
+      stepId === 'control_bleeding' || stepId === 'check_breathing' ? 'high' : 'low',
+      getFollowUpInstruction(instructionStep, state, getFollowUpTier(memory.turn_count)),
+      reason,
+      true
+    ),
+    prompt_type:
+      promptType ??
+      getPromptTypeForDecision({
+        step_id: `${stepId}_follow_up`,
+        needs_confirmation: true,
+      }),
+  };
+};
 
 const makeReassessDecision = (
   instruction: string,
   reason: string,
   priority: ProtocolDecision['priority'] = 'low'
 ) => makeDecision('reassess', priority, instruction, reason, true);
+
+const getConfirmationDecision = (
+  promptType: NonNullable<ProtocolDecision['prompt_type']>,
+  state: MergedState,
+  reason: string
+): ProtocolDecision => {
+  switch (promptType) {
+    case 'confirm_bleeding':
+      return {
+        ...makeDecision(
+          'control_bleeding',
+          'high',
+          getFollowUpInstruction('control_bleeding', state, 2),
+          reason,
+          true
+        ),
+        prompt_type: promptType,
+      };
+    case 'confirm_breathing':
+      return {
+        ...makeDecision(
+          'confirm_state',
+          'low',
+          getFollowUpInstruction('check_breathing', state, 2),
+          reason,
+          true
+        ),
+        prompt_type: promptType,
+      };
+    case 'confirm_responsiveness':
+      return {
+        ...makeDecision(
+          'confirm_state',
+          'low',
+          getFollowUpInstruction('check_responsive', state, 2),
+          reason,
+          true
+        ),
+        prompt_type: promptType,
+      };
+    default:
+      return {
+        ...makeDecision(
+          'confirm_state',
+          'low',
+          'Confirm what you see now.',
+          reason,
+          true
+        ),
+        prompt_type: promptType,
+      };
+  }
+};
+
+const maybeConvertBlockedDecision = (
+  decision: ProtocolDecision,
+  state: MergedState,
+  trust: TrustAssessment
+): ProtocolDecision => {
+  const field = getFieldForAction(decision.step_id);
+
+  if (!field || trust.allowedActions.includes(decision.step_id)) {
+    return decision;
+  }
+
+  if (trust.blockedActions.includes(decision.step_id) === false) {
+    return decision;
+  }
+
+  const promptType = getPromptTypeForField(field);
+  if (!promptType) {
+    return decision;
+  }
+
+  return getConfirmationDecision(promptType, state, trust.fields[field].reason);
+};
+
+const evidenceChangedMaterially = (
+  promptType: NonNullable<ProtocolDecision['prompt_type']>,
+  state: MergedState,
+  trust: TrustAssessment,
+  memory: MemoryContext
+) => {
+  const action = getActionForPromptType(promptType);
+  const field = getFieldForAction(action ?? '');
+
+  if (!field) {
+    return false;
+  }
+
+  const currentValue =
+    field === 'severe_bleeding'
+      ? state.severe_bleeding
+      : field === 'breathing'
+        ? state.breathing
+        : state.responsive;
+  const previousValue =
+    field === 'severe_bleeding'
+      ? memory.recent_signals.bleeding
+      : field === 'breathing'
+        ? memory.recent_signals.breathing
+        : memory.recent_signals.responsive;
+
+  if (currentValue !== previousValue) {
+    return true;
+  }
+
+  return (
+    Math.abs(trust.fields[field].confidence - memory.lastFieldConfidences[field]) >=
+    MATERIAL_CONFIDENCE_DELTA
+  );
+};
+
+const applyConfirmationCooldown = (
+  decision: ProtocolDecision,
+  state: MergedState,
+  trust: TrustAssessment,
+  memory: MemoryContext
+): ProtocolDecision => {
+  const promptType = decision.prompt_type ?? getPromptTypeForDecision(decision);
+
+  if (!promptType || memory.lastPromptType !== promptType || memory.lastPromptAt === null) {
+    return decision;
+  }
+
+  const cooldownActive = Date.now() - memory.lastPromptAt < CONFIRMATION_COOLDOWN_MS;
+  if (!cooldownActive || evidenceChangedMaterially(promptType, state, trust, memory)) {
+    return decision;
+  }
+
+  const action = getActionForPromptType(promptType);
+  if (action && trust.allowedActions.includes(action)) {
+    return {
+      ...makeDecision(
+        action,
+        decision.priority,
+        action === 'control_bleeding'
+          ? 'Apply pressure to the wound now.'
+          : action === 'check_breathing'
+            ? 'Check if they are breathing.'
+            : 'Check if they respond.',
+        'Confirmation prompt suppressed during cooldown; keeping the allowed field action.',
+        false
+      ),
+      cooldown_suppressed: true,
+      prompt_type: promptType,
+    };
+  }
+
+  return {
+    ...makeReassessDecision(
+      'Give me a quick update on their condition now.',
+      'Repeated confirmation prompt suppressed during cooldown.',
+      'low'
+    ),
+    cooldown_suppressed: true,
+    prompt_type: promptType,
+  };
+};
 
 const applyMemoryGuardrails = (
   decision: ProtocolDecision,
@@ -346,9 +549,9 @@ const applyMemoryGuardrails = (
   }
 
   const confirmationBias =
-    trust.needs_confirmation ||
+    decision.needs_confirmation ||
     memory.confidenceDropping ||
-    (memory.turn_count > 3 && trust.needs_confirmation) ||
+    (memory.turn_count > 3 && trust.blockedActions.length > 0) ||
     (memory.signalsStable && repeatStrength !== 'none');
 
   if (repeatStrength !== 'none') {
@@ -359,7 +562,8 @@ const applyMemoryGuardrails = (
         memory,
         repeatStrength === 'strong'
           ? 'Immediate repeat converted into a follow-up check.'
-          : 'Repeated critical step converted into a follow-up check.'
+          : 'Repeated critical step converted into a follow-up check.',
+        decision.prompt_type ?? getPromptTypeForDecision(decision)
       );
     }
 
@@ -378,14 +582,15 @@ const applyMemoryGuardrails = (
     );
   }
 
-  if (memory.turn_count > 3 && trust.needs_confirmation) {
-    return makeDecision(
-      'confirm_state',
-      'low',
-      'Confirm if they are breathing now.',
-      'Turn limit reached while trust still requires confirmation.',
-      true
-    );
+  if (memory.turn_count > 3 && trust.blockedActions.length > 0) {
+    const promptType = getFallbackPromptType(state, trust);
+    if (promptType) {
+      return getConfirmationDecision(
+        promptType,
+        state,
+        'Turn limit reached while a field still needs confirmation.'
+      );
+    }
   }
 
   if (memory.signalsStable && !memory.signalsImproving && decision.step_id === 'reassess') {
@@ -490,16 +695,6 @@ const decide = (
 ): ProtocolDecision => {
   const normalizedState = normalizeState(state);
 
-  if (trust.needs_confirmation) {
-    return makeDecision(
-      'confirm_state',
-      'low',
-      'Confirm if they are breathing.',
-      trust.reason,
-      true
-    );
-  }
-
   if (shouldUseVisibilityOverride(normalizedState)) {
     return makeDecision(
       'aim_camera',
@@ -516,16 +711,35 @@ const decide = (
     previousPhase !== null && currentPhase !== previousPhase;
 
   const baseDecision = getBaseDecisionForPhase(currentPhase, normalizedState, memory);
+  const fieldAwareDecision = maybeConvertBlockedDecision(baseDecision, normalizedState, trust);
   const guardedDecision = applyMemoryGuardrails(
-    baseDecision,
+    fieldAwareDecision,
     normalizedState,
     trust,
     memory,
     phaseChanged
   );
 
+  const narrowedDecision =
+    (guardedDecision.prompt_type ?? getPromptTypeForDecision(guardedDecision)) === null &&
+    trust.allowedActions.length === 0 &&
+    trust.blockedActions.length > 0
+      ? getConfirmationDecision(
+          getFallbackPromptType(normalizedState, trust) ?? 'confirm_breathing',
+          normalizedState,
+          trust.reason
+        )
+      : guardedDecision;
+
+  const cooldownAwareDecision = applyConfirmationCooldown(
+    narrowedDecision,
+    normalizedState,
+    trust,
+    memory
+  );
+
   return applyEscalation(
-    guardedDecision,
+    cooldownAwareDecision,
     baseDecision.priority,
     currentPhase,
     previousPhase,

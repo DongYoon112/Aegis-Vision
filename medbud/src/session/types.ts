@@ -1,4 +1,6 @@
 import type { NullableBoolean } from '../protocol/types';
+import type { PromptType } from '../protocol/decisionMetadata';
+import type { TrustFieldName } from '../protocol/trustTypes';
 
 export type RecentSignals = {
   bleeding: NullableBoolean;
@@ -16,6 +18,9 @@ export type SessionMemory = {
   recent_signals: RecentSignals;
   turn_count: number;
   signal_history: SignalSnapshot[];
+  lastPromptType: PromptType | null;
+  lastPromptAt: number | null;
+  lastFieldConfidences: Record<TrustFieldName, number>;
 };
 
 export type CooldownStrength = 'none' | 'weak' | 'strong';
@@ -31,4 +36,10 @@ export type MemoryContext = {
   similarity: number;
   signalsStable: boolean;
   signalsImproving: boolean;
+  lastPromptType: PromptType | null;
+  lastPromptAt: number | null;
+  lastFieldConfidences: Record<TrustFieldName, number>;
+  confirmationCooldownActive: boolean;
+  confirmationPromptSuppressed: boolean;
+  suppressedPromptType: PromptType | null;
 };

@@ -1,3 +1,5 @@
+import type { PromptType } from './decisionMetadata';
+
 export type NullableBoolean = boolean | null;
 
 export type ImageQuality = 'usable' | 'blurry' | 'dark' | 'unclear';
@@ -66,6 +68,8 @@ export type ProtocolDecision = {
   instruction: string;
   reason: string;
   needs_confirmation: boolean;
+  prompt_type?: PromptType | null;
+  cooldown_suppressed?: boolean;
 };
 
 const IMAGE_QUALITIES: ImageQuality[] = ['usable', 'blurry', 'dark', 'unclear'];

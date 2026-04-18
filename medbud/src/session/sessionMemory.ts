@@ -1,4 +1,9 @@
 import { clampConfidence, type MergedState, type ProtocolDecision } from '../protocol/types';
+import {
+  getActionForPromptType,
+  getFieldForAction,
+  getPromptTypeForDecision,
+} from '../protocol/decisionMetadata';
 import type { TrustAssessment } from '../protocol/trustTypes';
 import type { MemoryContext, RecentSignals, SessionMemory, SignalSnapshot } from './types';
 
@@ -90,6 +95,13 @@ export const createInitialSessionMemory = (): SessionMemory => ({
   },
   turn_count: 0,
   signal_history: [],
+  lastPromptType: null,
+  lastPromptAt: null,
+  lastFieldConfidences: {
+    breathing: 0,
+    severe_bleeding: 0,
+    responsiveness: 0,
+  },
 });
 
 export const buildMemoryContext = (
@@ -123,6 +135,12 @@ export const buildMemoryContext = (
     similarity,
     signalsStable: similarity > 0.7,
     signalsImproving: getProgressScore(memory.recent_signals, currentSnapshot) > 0,
+    lastPromptType: memory.lastPromptType,
+    lastPromptAt: memory.lastPromptAt,
+    lastFieldConfidences: { ...memory.lastFieldConfidences },
+    confirmationCooldownActive: false,
+    confirmationPromptSuppressed: false,
+    suppressedPromptType: null,
   };
 };
 
@@ -140,6 +158,10 @@ export const applyDecisionToMemory = (
   const nextRecentSteps = [...memory.recent_steps, decision.step_id].slice(
     -RECENT_STEPS_LIMIT
   );
+  const promptType = decision.prompt_type ?? getPromptTypeForDecision(decision);
+  const promptField =
+    getFieldForAction(decision.step_id) ??
+    getFieldForAction(getActionForPromptType(promptType) ?? '');
 
   return {
     last_step_id: decision.step_id,
@@ -149,5 +171,13 @@ export const applyDecisionToMemory = (
     recent_signals: recentSignals,
     turn_count: memory.turn_count + 1,
     signal_history: nextSignalHistory,
+    lastPromptType: promptType ?? memory.lastPromptType,
+    lastPromptAt: promptType ? Date.now() : memory.lastPromptAt,
+    lastFieldConfidences: promptField
+      ? {
+          ...memory.lastFieldConfidences,
+          [promptField]: trust.fields[promptField].confidence,
+        }
+      : { ...memory.lastFieldConfidences },
   };
 };

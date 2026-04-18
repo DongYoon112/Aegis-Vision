@@ -1,47 +1,12 @@
 import { clampConfidence, type CameraFrame } from '../../protocol/types';
-import { medbudEnv } from '../../utils/env';
+import { detectorAdapter } from './detectorAdapter';
 import type { FrameQualityResult, ObjectSignalResult } from './types';
 
 const SAFE_OBJECT_RESULT: ObjectSignalResult = {
   limb_visible: null,
   bleeding_region_candidate: null,
   object_confidence: 0,
-};
-
-const getMockLimbHint = (uri: string) => {
-  const normalizedUri = uri.toLowerCase();
-
-  if (normalizedUri.includes('left_leg')) {
-    return 'left_leg' as const;
-  }
-
-  if (normalizedUri.includes('right_leg')) {
-    return 'right_leg' as const;
-  }
-
-  if (normalizedUri.includes('left_arm')) {
-    return 'left_arm' as const;
-  }
-
-  if (normalizedUri.includes('right_arm')) {
-    return 'right_arm' as const;
-  }
-
-  return null;
-};
-
-const getMockBleedingHint = (uri: string) => {
-  const normalizedUri = uri.toLowerCase();
-
-  if (normalizedUri.includes('noblood')) {
-    return false;
-  }
-
-  if (normalizedUri.includes('blood') || normalizedUri.includes('bleed')) {
-    return true;
-  }
-
-  return null;
+  person_box_present: null,
 };
 
 export const analyzeObjectSignals = async (
@@ -52,28 +17,21 @@ export const analyzeObjectSignals = async (
     return SAFE_OBJECT_RESULT;
   }
 
-  if (!medbudEnv.useMocks) {
-    // TODO: Replace this conservative stub with a YOLO/TFLite/ONNX detector adapter.
+  try {
+    const available = await detectorAdapter.isAvailable();
+    if (!available) {
+      return SAFE_OBJECT_RESULT;
+    }
+
+    const result = await detectorAdapter.analyzeFrame(frame);
+
     return {
-      limb_visible: null,
-      bleeding_region_candidate: null,
-      object_confidence: clampConfidence(0.2, 0),
+      limb_visible: result.limb_visible,
+      bleeding_region_candidate: result.bleeding_region_candidate,
+      object_confidence: clampConfidence(result.detector_confidence, 0),
+      person_box_present: result.person_box_present,
     };
+  } catch {
+    return SAFE_OBJECT_RESULT;
   }
-
-  const limbVisible = getMockLimbHint(frame.uri);
-  const bleedingRegionCandidate = getMockBleedingHint(frame.uri);
-
-  if (limbVisible !== null || bleedingRegionCandidate !== null) {
-    return {
-      limb_visible: limbVisible,
-      bleeding_region_candidate: bleedingRegionCandidate,
-      object_confidence: clampConfidence(0.8, 0),
-    };
-  }
-
-  return {
-    ...SAFE_OBJECT_RESULT,
-    object_confidence: clampConfidence(0.2, 0),
-  };
 };
