@@ -1,4 +1,5 @@
 import { clampConfidence, type CameraFrame, type VisionOutput } from '../../protocol/types';
+import { analyzeObjectSignals } from './objectSignals';
 import { analyzePoseSignals } from './poseSignals';
 import { evaluateFrameQuality } from './frameQuality';
 
@@ -27,21 +28,25 @@ export const analyzeLocalVision = async (
     }
 
     const pose = await analyzePoseSignals(frame, quality);
-
-    if (pose.pose_status === 'not_run') {
-      return getStrictFallback();
-    }
+    const objectSignals = await analyzeObjectSignals(frame, quality);
 
     const confidence = clampConfidence(
-      pose.pose_confidence * quality.quality_factor,
+      0.7 * pose.pose_confidence + 0.3 * objectSignals.object_confidence,
       0
     );
 
     return {
       person_visible: pose.person_visible,
       body_position: pose.body_position,
-      severe_bleeding_likely: null,
-      limb_visible: null,
+      severe_bleeding_likely:
+        objectSignals.bleeding_region_candidate === true &&
+        objectSignals.object_confidence >= 0.7
+          ? true
+          : objectSignals.bleeding_region_candidate === false &&
+              objectSignals.object_confidence >= 0.7
+            ? false
+            : null,
+      limb_visible: objectSignals.limb_visible,
       image_quality: quality.image_quality,
       confidence,
     };

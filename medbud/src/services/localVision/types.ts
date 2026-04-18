@@ -1,4 +1,10 @@
-import type { BodyPosition, CameraFrame, ImageQuality, NullableBoolean } from '../../protocol/types';
+import type {
+  BodyPosition,
+  CameraFrame,
+  ImageQuality,
+  NullableBoolean,
+  VisibleLimb,
+} from '../../protocol/types';
 
 export type FrameQualityResult = {
   image_quality: ImageQuality;
@@ -14,6 +20,12 @@ export type PoseSignalResult = {
   body_position: BodyPosition;
   pose_confidence: number;
   pose_status: PoseStatus;
+};
+
+export type ObjectSignalResult = {
+  limb_visible: VisibleLimb;
+  bleeding_region_candidate: NullableBoolean;
+  object_confidence: number;
 };
 
 export type LocalVisionAnalyzer = (
