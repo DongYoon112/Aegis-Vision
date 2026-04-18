@@ -2,7 +2,7 @@ import { Camera } from 'expo-camera';
 
 import type { CameraFrame } from '../protocol/types';
 
-type CameraRefLike = {
+export type ExpoCameraRefLike = {
   takePictureAsync: (options?: Record<string, unknown>) => Promise<{
     uri: string;
     width?: number;
@@ -10,15 +10,13 @@ type CameraRefLike = {
   }>;
 };
 
-const SAMPLE_INTERVAL_MS = 1500;
-
-class CameraService {
-  private cameraRef: CameraRefLike | null = null;
+export class ExpoCameraSampler {
+  private cameraRef: ExpoCameraRefLike | null = null;
   private latestFrame: CameraFrame | null = null;
   private samplingInterval: ReturnType<typeof setInterval> | null = null;
   private captureInFlight = false;
 
-  attachCameraRef(ref: CameraRefLike | null) {
+  attachCameraRef(ref: ExpoCameraRefLike | null) {
     this.cameraRef = ref;
   }
 
@@ -54,13 +52,14 @@ class CameraService {
         capturedAt: new Date().toISOString(),
         width: typeof picture.width === 'number' ? picture.width : null,
         height: typeof picture.height === 'number' ? picture.height : null,
+        source: 'expo_camera',
       };
     } finally {
       this.captureInFlight = false;
     }
   }
 
-  startSampling() {
+  startSampling(intervalMs: number) {
     if (this.samplingInterval) {
       return;
     }
@@ -68,7 +67,7 @@ class CameraService {
     void this.captureLatestFrame();
     this.samplingInterval = setInterval(() => {
       void this.captureLatestFrame();
-    }, SAMPLE_INTERVAL_MS);
+    }, intervalMs);
   }
 
   stopSampling() {
@@ -83,4 +82,4 @@ class CameraService {
   }
 }
 
-export const cameraService = new CameraService();
+export const cameraService = new ExpoCameraSampler();

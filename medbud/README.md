@@ -1,10 +1,10 @@
-# Aegis Vision Stage 2
+# Aegis Vision Stage 3
 
-Aegis Vision is a one-screen Expo React Native prototype for an AI-assisted emergency workflow. The assistant is named Stitch. Stage 2 adds sampled camera-frame analysis and a rule-based protocol engine while preserving the phone-first prototype model and mock-mode demo path.
+Aegis Vision is a one-screen Expo React Native prototype for an AI-assisted emergency workflow. The assistant is named Stitch. Stage 3 upgrades frame input to a provider-based architecture so the phone can prefer Meta/Ray-Ban glasses as the camera source while preserving phone-camera fallback and mock mode.
 
-## Stage 2 Architecture
+## Stage 3 Architecture
 
-The pipeline is fixed and intentional:
+The decision pipeline remains fixed:
 
 ```text
 audio -> STT -> parser -> vision -> merge -> protocol engine -> GPT rephrase -> TTS
@@ -12,25 +12,56 @@ audio -> STT -> parser -> vision -> merge -> protocol engine -> GPT rephrase -> 
 
 Important constraints:
 
-- the protocol engine is the only decision-maker
-- GPT is used only for structured parsing, structured vision extraction, and short spoken rephrasing
-- sampled frames are analyzed, not continuous uploaded video
-- all model outputs are validated and sanitized before use
+- the protocol engine is still the only decision-maker
+- GPT is still limited to structured parsing, structured vision extraction, and short spoken rephrasing
+- the phone remains the controller/orchestrator
+- wake word and "Hey Meta" integration are out of scope
+- continuous video streaming is out of scope
 
-## What Stage 2 Includes
+## Frame Provider Selection
+
+Stage 3 chooses exactly one frame provider at a time:
+
+- `MockFrameProvider`
+  - selected whenever `EXPO_PUBLIC_MEDBUD_USE_MOCKS=true`
+- `MetaGlassesFrameProvider`
+  - selected when Meta wearables integration is available and connected
+- `ExpoCameraFrameProvider`
+  - selected whenever Meta is unavailable or disconnected
+
+Safety rules:
+
+- provider is locked at session start
+- the app never re-resolves the active provider mid-session
+- if Meta disconnects during a session, fallback only applies on the next session
+- frames older than `3000ms` are treated as unavailable
+
+## Meta Integration Notes
+
+Meta integration is isolated behind:
+
+- `src/services/metaWearablesBridge.ts`
+- `src/services/frameProvider/metaGlassesProvider.ts`
+- `src/services/glassesAudio.ts`
+
+The current bridge is a typed stub for future native iOS/Android wiring. It does not fake unsupported SDK functionality. This keeps the Expo/JS app runnable while the native integration boundary remains explicit and minimal.
+
+Auto-connect behavior:
+
+- the app attempts to connect Meta glasses on startup
+- every connect attempt is bounded to `2000ms`
+- timeout or failure falls back safely to phone camera
+
+## What Stage 3 Includes
 
 - Tap `Start Aegis Vision`
-- Record a short audio clip on the phone
-- Sample a camera frame every `1.5s` while the session is active
-- Run ElevenLabs Speech-to-Text
-- Parse the transcript into structured emergency state
-- Analyze the latest sampled frame into structured scene state
-- Merge parser state and vision state with parser-first safety rules
-- Run a rule-based protocol engine
-- Rephrase the chosen instruction into a short Stitch response
-- Run ElevenLabs Text-to-Speech
-- Play the response on the phone
-- Show transcript, parser JSON, vision JSON, merged state JSON, protocol decision, and error output on one screen
+- Keep the Stage 2 emergency pipeline intact
+- Prefer Meta glasses frames when available
+- Fall back to Expo phone camera when glasses are unavailable
+- Preserve deterministic mock-mode frame input
+- Show input-source status, connection state, active provider, last frame timestamp, and frame freshness
+- Show a live phone preview only when phone camera is active
+- Show the latest sampled frame snapshot when Meta glasses are active
 
 ## Setup
 
@@ -65,12 +96,12 @@ npm run typecheck
 
 ## Required Permissions
 
-Stage 2 needs:
+Stage 3 still needs:
 
 - microphone permission for recording audio
-- camera permission for sampled frame analysis
+- camera permission for phone-camera fallback and phone preview
 
-These are configured through Expo plugins in `app.json`.
+These permissions remain configured through Expo plugins in `app.json`.
 
 ## Required Environment Variables
 
@@ -86,16 +117,13 @@ EXPO_PUBLIC_MEDBUD_USE_MOCKS=true
 
 ## Mock Mode
 
-Mock mode stays fully demoable without live API credentials.
+Mock mode stays fully demoable without live API credentials or Meta hardware.
 
 In mock mode:
 
-- audio still records on-device
-- camera preview and frame sampling still run locally
-- parser returns a validated structured mock casualty state
-- vision returns a validated structured mock scene state
-- merge and protocol logic still run normally
-- Stitch speech falls back to on-device voice playback
+- the mock frame provider is always selected
+- parser, vision, merge, protocol, and TTS flow still run normally
+- the app remains deterministic and demo-friendly
 
 ## Live Mode Notes
 
@@ -103,29 +131,16 @@ When `EXPO_PUBLIC_MEDBUD_USE_MOCKS=false`, the app will:
 
 - upload recorded audio to ElevenLabs STT
 - send transcript text to OpenAI Responses API for structured parsing
-- send the sampled frame to OpenAI Responses API for structured vision extraction
+- send the selected provider’s latest fresh frame to OpenAI Responses API for structured vision extraction
 - send the protocol engine instruction to OpenAI for short spoken rephrasing
 - send the short spoken line to ElevenLabs TTS
-- play the returned audio on the phone
+- play the returned audio on the phone unless future glasses audio routing becomes available
 
 ## Security Warning
 
 This prototype keeps provider keys in client-side Expo environment variables. Those keys are embedded into the app bundle and are not secure. This is acceptable only for local prototyping and short-lived demos.
 
 For any production system, move provider access behind a backend or signed token model.
-
-## Protocol Behavior
-
-The protocol engine uses this fixed priority order:
-
-1. `severe_bleeding === true`
-2. `responsive === false && breathing === null`
-3. `person_visible === false`
-4. `image_quality !== "usable"`
-5. `confidence < 0.55`
-6. fallback
-
-Breathing checks intentionally outrank camera-positioning prompts.
 
 ## Project Structure
 
@@ -151,8 +166,16 @@ medbud/
       ResponseCard.tsx
       ErrorCard.tsx
     services/
+      frameProvider/
+        index.ts
+        types.ts
+        expoCameraProvider.ts
+        metaGlassesProvider.ts
+        mockProvider.ts
       camera.ts
       vision.ts
+      glassesAudio.ts
+      metaWearablesBridge.ts
       elevenlabsSTT.ts
       elevenlabsTTS.ts
       metaGlasses.ts
@@ -166,18 +189,12 @@ medbud/
   App.tsx
 ```
 
-## How Meta Ray-Ban Integration Will Replace Or Augment Expo Camera Input In Stage 3
+## Future Native Wiring
 
-Stage 2 uses Expo Camera as the phone-first frame source. Stage 3 should keep the same parser, merge, protocol, rephrase, and TTS layers while swapping or augmenting the input providers:
+Stage 3 keeps native Meta-specific code centralized and mobile-first:
 
-- `src/services/camera.ts`
-  - current source of sampled phone frames
-  - future swap point for Meta/Ray-Ban frame capture
-- `src/services/metaGlasses.ts`
-  - current placeholder service
-  - future source for glasses camera frames and wearable audio routing
-- `src/services/recorder.ts` and `src/services/player.ts`
-  - current phone microphone and speaker paths
-  - future swap points for glasses audio input and output
+- native Meta wearables SDK setup belongs behind `src/services/metaWearablesBridge.ts`
+- JS provider selection belongs in `src/services/frameProvider/`
+- UI should not directly call native Meta APIs
 
-The goal for Stage 3 is to replace or augment the capture layer, not to move protocol authority into the model.
+This lets the app keep working with mock mode and phone fallback while native bridge work evolves.

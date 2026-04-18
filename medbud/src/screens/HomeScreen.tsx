@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,9 +24,10 @@ import type {
   ProtocolDecision,
   VisionOutput,
 } from '../protocol/types';
-import { cameraService } from '../services/camera';
 import { elevenLabsSTT } from '../services/elevenlabsSTT';
 import { elevenLabsTTS } from '../services/elevenlabsTTS';
+import { providerManager } from '../services/frameProvider';
+import type { FrameProvider, FrameProviderStatus } from '../services/frameProvider/types';
 import { openAIService } from '../services/openai';
 import { player } from '../services/player';
 import { recorder } from '../services/recorder';
@@ -34,6 +36,7 @@ import type { SessionState } from '../types/session';
 import { assertLiveConfig, medbudEnv } from '../utils/env';
 
 const AUTO_STOP_MS = 5000;
+const FRAME_STALE_MS = 3000;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -42,6 +45,30 @@ const sleep = (ms: number) =>
 
 const stringifyValue = (value: unknown, placeholder = '{}') =>
   value ? JSON.stringify(value, null, 2) : placeholder;
+
+const isFrameFresh = (frame: CameraFrame | null) => {
+  if (!frame) {
+    return false;
+  }
+
+  const capturedAt = Date.parse(frame.capturedAt);
+  if (Number.isNaN(capturedAt)) {
+    return false;
+  }
+
+  return Date.now() - capturedAt <= FRAME_STALE_MS;
+};
+
+const getFreshFrame = (frame: CameraFrame | null) => (isFrameFresh(frame) ? frame : null);
+
+const defaultProviderStatus: FrameProviderStatus = {
+  kind: medbudEnv.useMocks ? 'mock' : 'expo_camera',
+  available: true,
+  active: false,
+  connectionState: medbudEnv.useMocks ? 'connected' : 'disconnected',
+  lastFrameAt: null,
+  statusLabel: medbudEnv.useMocks ? 'Mock device active' : 'Using phone camera fallback',
+};
 
 export function HomeScreen() {
   const cameraRef = useRef<CameraView | null>(null);
@@ -57,16 +84,48 @@ export function HomeScreen() {
   const [latestFrame, setLatestFrame] = useState<CameraFrame | null>(null);
   const [spokenResponse, setSpokenResponse] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
-  const [cameraPermissionGranted, setCameraPermissionGranted] = useState(false);
+  const [providerStatus, setProviderStatus] =
+    useState<FrameProviderStatus>(defaultProviderStatus);
+  const [initializingProvider, setInitializingProvider] = useState(true);
 
   const isBusy = sessionState !== 'idle';
 
+  const syncProviderStatus = () => {
+    setProviderStatus(providerManager.getStatus());
+  };
+
   useEffect(() => {
-    cameraService.attachCameraRef(cameraRef.current);
+    let mounted = true;
+
+    const initializeProviders = async () => {
+      try {
+        await providerManager.initialize();
+        await providerManager.resolveActiveProvider();
+        if (mounted) {
+          syncProviderStatus();
+        }
+      } catch (error) {
+        if (mounted) {
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : 'Failed to initialize frame providers.'
+          );
+        }
+      } finally {
+        if (mounted) {
+          setInitializingProvider(false);
+        }
+      }
+    };
+
+    providerManager.attachExpoCameraRef(cameraRef.current);
+    void initializeProviders();
 
     return () => {
-      cameraService.attachCameraRef(null);
-      cameraService.stopSampling();
+      mounted = false;
+      providerManager.attachExpoCameraRef(null);
+      providerManager.getActiveProvider().stopSampling();
       void player.stop();
     };
   }, []);
@@ -82,13 +141,36 @@ export function HomeScreen() {
     setErrorMessage('');
   };
 
-  const ensureCameraReady = async () => {
-    await cameraService.requestPermissions();
-    setCameraPermissionGranted(true);
+  const connectGlasses = async () => {
+    setInitializingProvider(true);
+    try {
+      await providerManager.connectGlasses();
+      syncProviderStatus();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to connect glasses.'
+      );
+    } finally {
+      setInitializingProvider(false);
+    }
+  };
+
+  const disconnectGlasses = async () => {
+    setInitializingProvider(true);
+    try {
+      await providerManager.disconnectGlasses();
+      syncProviderStatus();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Failed to disconnect glasses.'
+      );
+    } finally {
+      setInitializingProvider(false);
+    }
   };
 
   const startSession = async () => {
-    if (isBusy) {
+    if (isBusy || initializingProvider) {
       return;
     }
 
@@ -99,18 +181,24 @@ export function HomeScreen() {
         assertLiveConfig();
       }
 
-      await ensureCameraReady();
+      const provider = providerManager.getActiveProvider();
+      const sessionProvider: FrameProvider = provider;
+
+      await sessionProvider.requestPermissions();
 
       setSessionState('listening');
-      cameraService.attachCameraRef(cameraRef.current);
-      cameraService.startSampling();
+      sessionProvider.startSampling();
+      syncProviderStatus();
       await recorder.startRecording();
       await sleep(AUTO_STOP_MS);
 
       const audio = await recorder.stopRecording();
-      cameraService.stopSampling();
-      const frame = cameraService.getLatestFrame();
-      setLatestFrame(frame);
+      sessionProvider.stopSampling();
+      const sampledFrame = sessionProvider.getLatestFrame();
+      setLatestFrame(sampledFrame);
+      syncProviderStatus();
+
+      const freshFrame = getFreshFrame(sampledFrame);
 
       setSessionState('transcribing');
       const transcriptText = await elevenLabsSTT.transcribeAudio(audio);
@@ -121,7 +209,7 @@ export function HomeScreen() {
       setParserOutput(parsed);
 
       setSessionState('vision');
-      const vision = await visionService.analyzeFrame(frame);
+      const vision = await visionService.analyzeFrame(freshFrame);
       setVisionOutput(vision);
 
       setSessionState('deciding');
@@ -137,9 +225,13 @@ export function HomeScreen() {
       const synthesizedAudio = await elevenLabsTTS.synthesizeSpeech(rephrased);
       await player.play(synthesizedAudio);
 
+      await providerManager.resolveActiveProvider();
+      syncProviderStatus();
       setSessionState('idle');
     } catch (error) {
-      cameraService.stopSampling();
+      providerManager.getActiveProvider().stopSampling();
+      await providerManager.resolveActiveProvider();
+      syncProviderStatus();
       await player.stop().catch(() => undefined);
       setSessionState('error');
       setErrorMessage(
@@ -149,14 +241,22 @@ export function HomeScreen() {
     }
   };
 
+  const showPhonePreview = providerStatus.kind === 'expo_camera';
+  const showSnapshot = providerStatus.kind === 'meta_glasses' && latestFrame?.uri;
+  const frameFreshness = latestFrame
+    ? isFrameFresh(latestFrame)
+      ? 'fresh'
+      : 'stale'
+    : 'none';
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.header}>
-        <Text style={styles.eyebrow}>Aegis Vision Stage 2</Text>
-        <Text style={styles.title}>Stitch multimodal emergency loop</Text>
+        <Text style={styles.eyebrow}>Aegis Vision Stage 3</Text>
+        <Text style={styles.title}>Stitch wearable frame-source loop</Text>
         <Text style={styles.subtitle}>
-          Audio is transcribed, parsed, combined with sampled vision, routed through
-          a rule-based protocol engine, then rephrased into a short Stitch response.
+          The phone still orchestrates the session while the active frame source can
+          come from Meta glasses, phone fallback, or a mock device.
         </Text>
       </View>
 
@@ -164,12 +264,12 @@ export function HomeScreen() {
         <StatusBadge state={sessionState} />
         <Pressable
           accessibilityRole="button"
-          disabled={isBusy}
+          disabled={isBusy || initializingProvider}
           onPress={startSession}
           style={({ pressed }: { pressed: boolean }) => [
             styles.button,
-            isBusy && styles.buttonDisabled,
-            pressed && !isBusy && styles.buttonPressed,
+            (isBusy || initializingProvider) && styles.buttonDisabled,
+            pressed && !isBusy && !initializingProvider && styles.buttonPressed,
           ]}
         >
           <Text style={styles.buttonText}>
@@ -178,29 +278,90 @@ export function HomeScreen() {
         </Pressable>
         <Text style={styles.helperText}>
           {medbudEnv.useMocks
-            ? 'Mock mode is enabled. Stitch still runs the full parser, vision, merge, protocol, and TTS pipeline.'
-            : 'Live mode is enabled. Stitch uses Structured Outputs for parser, vision, and rephrase steps.'}
+            ? 'Mock mode is enabled. The mock device remains the active frame source.'
+            : 'Stage 3 prefers Meta glasses when available and falls back to the phone camera safely.'}
         </Text>
       </View>
 
+      <View style={styles.statusCard}>
+        <Text style={styles.cardTitle}>Input Source</Text>
+        <Text style={styles.statusLine}>{providerStatus.statusLabel}</Text>
+        <Text style={styles.statusMeta}>
+          Active provider: {providerStatus.kind}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Connection state: {providerStatus.connectionState}
+        </Text>
+        <Text style={styles.statusMeta}>
+          Last frame timestamp: {providerStatus.lastFrameAt ?? 'none'}
+        </Text>
+        {providerStatus.reason ? (
+          <Text style={styles.statusMeta}>Reason: {providerStatus.reason}</Text>
+        ) : null}
+        {!medbudEnv.useMocks ? (
+          <View style={styles.connectionRow}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isBusy || initializingProvider}
+              onPress={connectGlasses}
+              style={({ pressed }: { pressed: boolean }) => [
+                styles.secondaryButton,
+                (isBusy || initializingProvider) && styles.secondaryButtonDisabled,
+                pressed &&
+                  !isBusy &&
+                  !initializingProvider &&
+                  styles.secondaryButtonPressed,
+              ]}
+            >
+              <Text style={styles.secondaryButtonText}>Connect Glasses</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isBusy || initializingProvider}
+              onPress={disconnectGlasses}
+              style={({ pressed }: { pressed: boolean }) => [
+                styles.secondaryButton,
+                (isBusy || initializingProvider) && styles.secondaryButtonDisabled,
+                pressed &&
+                  !isBusy &&
+                  !initializingProvider &&
+                  styles.secondaryButtonPressed,
+              ]}
+            >
+              <Text style={styles.secondaryButtonText}>Disconnect Glasses</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+
       <View style={styles.cameraCard}>
-        <Text style={styles.cardTitle}>Camera Preview</Text>
-        <View style={styles.cameraFrame}>
-          <CameraView
-            ref={(ref: CameraView | null) => {
-              cameraRef.current = ref;
-              cameraService.attachCameraRef(ref);
-            }}
-            style={styles.camera}
-            facing="back"
-          />
-        </View>
+        <Text style={styles.cardTitle}>Frame Source</Text>
+        {showPhonePreview ? (
+          <View style={styles.cameraFrame}>
+            <CameraView
+              ref={(ref: CameraView | null) => {
+                cameraRef.current = ref;
+                providerManager.attachExpoCameraRef(ref);
+              }}
+              style={styles.camera}
+              facing="back"
+            />
+          </View>
+        ) : showSnapshot ? (
+          <View style={styles.cameraFrame}>
+            <Image source={{ uri: latestFrame.uri }} style={styles.snapshot} />
+          </View>
+        ) : (
+          <View style={[styles.cameraFrame, styles.placeholderFrame]}>
+            <Text style={styles.placeholderText}>
+              {providerStatus.kind === 'mock'
+                ? 'Mock frame source active'
+                : 'No live phone preview while glasses are active'}
+            </Text>
+          </View>
+        )}
         <Text style={styles.cameraText}>
-          {cameraPermissionGranted
-            ? latestFrame
-              ? `Latest sampled frame: ${latestFrame.capturedAt}`
-              : 'Camera ready. The latest frame will be sampled during an active session.'
-            : 'Camera permission will be requested when you start a session.'}
+          Frame freshness: {frameFreshness}
         </Text>
       </View>
 
@@ -285,16 +446,56 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
-  cameraCard: {
+  statusCard: {
     backgroundColor: '#ffffff',
     borderRadius: 16,
     padding: 16,
-    gap: 10,
+    gap: 8,
   },
   cardTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#112235',
+  },
+  statusLine: {
+    color: '#1b3b5a',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  statusMeta: {
+    color: '#5a6d80',
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  connectionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  secondaryButton: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#e8eef5',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  secondaryButtonDisabled: {
+    backgroundColor: '#d5dde6',
+  },
+  secondaryButtonPressed: {
+    opacity: 0.9,
+  },
+  secondaryButtonText: {
+    color: '#18304a',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  cameraCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
   },
   cameraFrame: {
     overflow: 'hidden',
@@ -304,6 +505,19 @@ const styles = StyleSheet.create({
   },
   camera: {
     flex: 1,
+  },
+  snapshot: {
+    width: '100%',
+    height: '100%',
+  },
+  placeholderFrame: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  placeholderText: {
+    color: '#dbe6f2',
+    fontSize: 14,
+    fontWeight: '600',
   },
   cameraText: {
     color: '#5a6d80',
