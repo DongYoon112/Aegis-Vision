@@ -411,7 +411,7 @@ export function HomeScreen() {
       <JsonCard
         title="Protocol Decision"
         json={stringifyValue(protocolDecision)}
-        placeholder='{\n  "step_id": "",\n  "priority": "low",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false\n}'
+        placeholder='{\n  "step_id": "",\n  "priority": "critical",\n  "instruction": "",\n  "reason": "",\n  "needs_confirmation": false\n}'
       />
       <ResponseCard response={spokenResponse} />
       <ErrorCard error={errorMessage} />

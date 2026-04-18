@@ -24,6 +24,29 @@ type StructuredResponseOptions = {
   input: ResponseInputMessage[];
 };
 
+type ResponsesApiContentItem = {
+  type?: string;
+  text?: string;
+  json?: unknown;
+  refusal?: string;
+};
+
+type ResponsesApiOutputItem = {
+  content?: ResponsesApiContentItem[];
+};
+
+type ResponsesApiResponse = {
+  output_text?: string;
+  output?: ResponsesApiOutputItem[];
+  status?: string;
+  incomplete_details?: {
+    reason?: string;
+  };
+  error?: {
+    message?: string;
+  };
+};
+
 const FALLBACK_REPHRASE = (decision: ProtocolDecision) => {
   const trimmed = decision.instruction.trim();
   const words = trimmed.split(/\s+/).filter(Boolean);
@@ -60,15 +83,41 @@ async function createStructuredResponse<T>({
     throw new Error(`OpenAI request failed (${response.status}): ${detail}`);
   }
 
-  const data = (await response.json()) as {
-    output_text?: string;
-  };
+  const data = (await response.json()) as ResponsesApiResponse;
+  const extracted = extractStructuredResponseText(data);
 
-  if (!data.output_text) {
-    throw new Error('OpenAI returned no structured output text.');
+  if (!extracted) {
+    const incompleteReason = data.incomplete_details?.reason;
+    const errorMessage = data.error?.message;
+    const detail = [errorMessage, incompleteReason].filter(Boolean).join(' | ');
+    throw new Error(
+      detail
+        ? `OpenAI returned no structured output text. ${detail}`
+        : 'OpenAI returned no structured output text.'
+    );
   }
 
-  return JSON.parse(data.output_text) as T;
+  return JSON.parse(extracted) as T;
+}
+
+function extractStructuredResponseText(data: ResponsesApiResponse): string | null {
+  if (typeof data.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text;
+  }
+
+  for (const outputItem of data.output ?? []) {
+    for (const contentItem of outputItem.content ?? []) {
+      if (typeof contentItem.text === 'string' && contentItem.text.trim()) {
+        return contentItem.text;
+      }
+
+      if (contentItem.json !== undefined) {
+        return JSON.stringify(contentItem.json);
+      }
+    }
+  }
+
+  return null;
 }
 
 const REPHRASE_SCHEMA = {

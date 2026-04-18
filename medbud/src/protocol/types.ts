@@ -51,7 +51,14 @@ export type MergedState = {
   notes: string[];
 };
 
-export type ProtocolPriority = 'low' | 'medium' | 'high';
+export type CasePhase =
+  | 'unknown'
+  | 'initial_assessment'
+  | 'bleeding_control'
+  | 'airway_check'
+  | 'stabilization';
+
+export type ProtocolPriority = 'low' | 'medium' | 'high' | 'critical';
 
 export type ProtocolDecision = {
   step_id: string;
